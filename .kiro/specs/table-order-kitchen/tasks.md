@@ -70,11 +70,12 @@
   - _Depends: 3.1, 3.2, 3.3_
 
 - [ ] 4. Core: StaffOperationsGateway（厨房/レジの唯一の書き込み経路）
-- [ ] 4.1 (P) start_session / close_session RPCの実装
-  - 人数を記録して新規セッションを発行する`start_session`と、確認済みの会計操作を受けてセッションを終了する`close_session`を実装する
-  - 部分ユニークインデックス違反を`SESSION_ALREADY_ACTIVE`として処理し、`device_role`検証を先頭で行う
+- [ ] 4.1 (P) start_session / close_session / update_party_size RPCの実装
+  - 人数を記録して新規セッションを発行する`start_session`、確認済みの会計操作を受けてセッションを終了する`close_session`、来店中のセッションの人数を変更する`update_party_size`を実装する
+  - 部分ユニークインデックス違反を`SESSION_ALREADY_ACTIVE`として処理し、`device_role`検証を先頭で行う。`update_party_size`は対象セッションが`closed`の場合`SESSION_NOT_ACTIVE`を返す
   - 観測可能な完了条件: アクティブセッションが既にある卓に対する`start_session`が`SESSION_ALREADY_ACTIVE`エラーを返す
-  - _Requirements: 3.1, 3.2, 3.3, 3.4, 4.1, 4.2, 4.3, 4.4_
+  - 観測可能な完了条件: 会計済み（`closed`）のセッションに対する`update_party_size`が`SESSION_NOT_ACTIVE`エラーを返す
+  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 4.1, 4.2, 4.3, 4.4_
   - _Boundary: StaffOperationsGateway_
   - _Depends: 1.3, 1.4, 2.1, 2.2_
 
@@ -105,9 +106,9 @@
   - _Depends: 4.1_
 
 - [ ] 4.6 StaffOperationsGatewayのTypeScriptラッパー
-  - `startSession`/`closeSession`/`addOrderItem`/`removeOrderItem`/`updateOrderItemStatus`/`setSoldOut`/`resolveCallRequest`/`listKitchenFeed`/`listRegisterFeed`を型付きで公開するラッパーを実装する
+  - `startSession`/`closeSession`/`updatePartySize`/`addOrderItem`/`removeOrderItem`/`updateOrderItemStatus`/`setSoldOut`/`resolveCallRequest`/`listKitchenFeed`/`listRegisterFeed`を型付きで公開するラッパーを実装する
   - 観測可能な完了条件: 全メソッドの戻り値が`Result<T,E>`型として型チェックを通過する
-  - _Requirements: 2.2, 2.4, 3.1, 3.2, 3.3, 3.4, 4.1, 4.2, 4.3, 4.4, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 6.8, 6.9, 6.10, 7.1, 7.3, 7.4_
+  - _Requirements: 2.2, 2.4, 3.1, 3.2, 3.3, 3.4, 3.5, 4.1, 4.2, 4.3, 4.4, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 6.8, 6.9, 6.10, 7.1, 7.3, 7.4_
   - _Depends: 4.1, 4.2, 4.3, 4.4, 4.5_
 
 - [ ] 5. useRealtimeFeedフックの実装
@@ -222,6 +223,12 @@
   - _Requirements: 2.4_
   - _Depends: 8.1_
 
+- [ ] 8.7 人数変更UI（確認モーダル）
+  - 卓詳細パネルに人数更新ボタンを設け、レジからの人数変更操作と実行前の確認モーダルを実装する
+  - 観測可能な完了条件: 人数変更の確認モーダルで確認すると、卓マップのタイルと卓詳細パネルの人数表示が更新される
+  - _Requirements: 3.5_
+  - _Depends: 8.2_
+
 - [ ] 9. Integration: デバイスガードと画面配線
 - [ ] 9.1 厨房/レジ起動時のデバイスセッション確認とセットアップ導線
   - `/kitchen`・`/register`起動時に`ensureDeviceSession`を確認し、未プロビジョニングの場合は`/setup/[role]`へ導線を表示する
@@ -243,10 +250,11 @@
   - _Depends: 3.2_
 
 - [ ] 10.2 StaffOperationsGateway ユニットテスト
-  - `start_session`の重複防止、`update_order_item_status`のジャンル別許可遷移、`list_kitchen_feed`の一品優先順と調理完了の直近完了順、`add_order_item`/`remove_order_item`の境界ケースをテストする
+  - `start_session`の重複防止、`update_party_size`の境界ケース（`closed`セッションへの拒否）、`update_order_item_status`のジャンル別許可遷移、`list_kitchen_feed`の一品優先順と調理完了の直近完了順、`add_order_item`/`remove_order_item`の境界ケースをテストする
   - 観測可能な完了条件: ドリンクジャンルへの`in_progress`遷移要求が`INVALID_TRANSITION`として拒否されることがテストで確認される
   - 観測可能な完了条件: `list_kitchen_feed`の調理完了列が`status_updated_at`降順で返ることがテストで確認される
-  - _Requirements: 3.1, 3.4, 4.1, 5.5, 5.6, 6.3, 6.4, 6.6, 6.7, 6.10_
+  - 観測可能な完了条件: 会計済みセッションへの`update_party_size`が`SESSION_NOT_ACTIVE`として拒否されることがテストで確認される
+  - _Requirements: 3.1, 3.4, 3.5, 4.1, 5.5, 5.6, 6.3, 6.4, 6.6, 6.7, 6.10_
   - _Depends: 4.5_
 
 - [ ] 10.3 結合テスト（RLS境界・権限・整合性）
@@ -261,10 +269,11 @@
   - _Requirements: 1.5, 1.6, 1.7, 1.9, 1.12, 3.1, 3.3, 3.4, 4.1, 4.2, 4.4, 5.1, 5.4, 6.1, 6.3, 6.4, 6.8_
   - _Depends: 9.2_
 
-- [ ] 10.5 E2E: エッジケース（売り切れ・人数入力・レジ確認操作・セッション失効）
-  - 売り切れ登録の確認モーダル、入店時の人数入力と卓マップ表示、レジからの品目追加/削除確認モーダル、セッション終了後の旧セッションからの注文拒否を検証する
+- [ ] 10.5 E2E: エッジケース（売り切れ・人数入力・人数変更・レジ確認操作・セッション失効）
+  - 売り切れ登録の確認モーダル、入店時の人数入力と卓マップ表示、来店中の人数変更確認モーダル、レジからの品目追加/削除確認モーダル、セッション終了後の旧セッションからの注文拒否を検証する
   - 観測可能な完了条件: セッション終了後に旧セッションIDで送信した注文がすべて拒否されることがテストで確認される
-  - _Requirements: 1.9, 3.1, 3.4, 4.2, 4.4, 5.4, 5.5, 5.6, 7.1, 7.2, 7.3_
+  - 観測可能な完了条件: 人数変更の確認モーダルで確認すると卓マップの人数表示が変わることがテストで確認される
+  - _Requirements: 1.9, 3.1, 3.4, 3.5, 4.2, 4.4, 5.4, 5.5, 5.6, 7.1, 7.2, 7.3_
   - _Depends: 9.2_
 
 ## Implementation Notes

@@ -194,6 +194,7 @@ stateDiagram-v2
 | 1.12 | 確定注文合計の常時表示 | CustomerOrderingGateway, RealtimeFeed | `getOrderingContext`（`confirmedTotal`） | 注文送信〜厨房反映フロー |
 | 2.1-2.4 | 呼び出しボタン送信・重複防止・レジへの通知表示・対応済み処理 | CustomerOrderingGateway, StaffOperationsGateway | `createCallRequest`, `resolveCallRequest`, `listRegisterFeed`（`hasOpenCallRequest`） | 注文送信〜厨房反映フローと同型 |
 | 3.1-3.4 | レジの入店（人数記録）/会計操作（確認あり）によるセッション開始・終了 | StaffOperationsGateway | `startSession`, `closeSession` | 来店セッションのライフサイクル |
+| 3.5 | 来店中の人数変更（確認あり） | StaffOperationsGateway | `updatePartySize` | 来店セッションのライフサイクル |
 | 4.1-4.4 | セッション整合性ルール（1卓1アクティブ・拒否・履歴保持・独立ID） | Schema & RLS Foundation, StaffOperationsGateway | `startSession`（`SESSION_ALREADY_ACTIVE`） | 来店セッションのライフサイクル |
 | 5.1-5.4 | レジでの卓別会計確認表示・全卓の状況一覧 | StaffOperationsGateway | `listRegisterFeed` | 注文送信〜厨房反映フロー（Realtime経由で反映） |
 | 5.5-5.7 | レジからの品目追加・削除・ステータス変更（いずれも確認あり） | StaffOperationsGateway | `addOrderItem`, `removeOrderItem`, `updateOrderItemStatus` | - |
@@ -210,12 +211,12 @@ stateDiagram-v2
 |-----------|--------------|--------|---------------|---------------------------|-----------|
 | Schema & RLS Foundation | Data | テーブル定義とRLSによる境界の物理的強制 | 4.1, 6.3, 6.4, 8.1-8.3 | Supabase Postgres (P0) | State |
 | CustomerOrderingGateway | RPC / Backend Logic | 客向け操作（閲覧・注文・呼び出し）の唯一の書き込み経路 | 1.1-1.12, 2.1-2.3, 7.2 | Schema & RLS Foundation (P0) | Service |
-| StaffOperationsGateway | RPC / Backend Logic | 厨房/レジ向け操作の唯一の書き込み経路 | 2.4, 3.1-3.4, 4.1-4.4, 5.1-5.7, 6.1-6.10, 7.1, 7.3-7.4 | Schema & RLS Foundation (P0), DeviceIdentityProvider (P0) | Service |
+| StaffOperationsGateway | RPC / Backend Logic | 厨房/レジ向け操作の唯一の書き込み経路 | 2.4, 3.1-3.5, 4.1-4.4, 5.1-5.7, 6.1-6.10, 7.1, 7.3-7.4 | Schema & RLS Foundation (P0), DeviceIdentityProvider (P0) | Service |
 | DeviceIdentityProvider | Auth | 厨房/レジタブレットの匿名デバイス識別とプロビジョニング | 8.2, 8.3 | Supabase Auth (P0) | Service, State |
 | RealtimeFeed | Frontend Infra | 客/厨房/レジ画面へのリアルタイム更新と再接続時の再同期 | 1.12, 6.1, 6.8, 6.9 | Supabase Realtime (P0) | Event |
 | CustomerOrderApp (UI) | Presentation | 客向け注文画面。フード/一品/ドリンクのジャンル別メニュー表示とオプション選択、確定注文合計の表示を含む | 1.1-1.12, 2.1-2.2 | CustomerOrderingGateway (P0), RealtimeFeed (P1) | - |
 | KitchenBoard (UI) | Presentation | 厨房画面。フードボード／ドリンクボード／売り切れボードの3タブを1台のタブレットで切り替える | 6.1-6.10, 7.1, 7.3-7.4 | StaffOperationsGateway (P0), RealtimeFeed (P0) | - |
-| RegisterConsole (UI) | Presentation | レジ通常モード画面（卓マップ表示・注文管理） | 2.4, 3.1-3.4, 5.1-5.7 | StaffOperationsGateway (P0), RealtimeFeed (P1) | - |
+| RegisterConsole (UI) | Presentation | レジ通常モード画面（卓マップ表示・注文管理） | 2.4, 3.1-3.5, 5.1-5.7 | StaffOperationsGateway (P0), RealtimeFeed (P1) | - |
 
 ### Data / RPC Layer
 
@@ -370,12 +371,13 @@ type CallRequestError = { code: "SESSION_NOT_ACTIVE" } | { code: "CALL_ALREADY_O
 | Field | Detail |
 |-------|--------|
 | Intent | 厨房/レジのデバイス識別を持つクライアントのみが実行できる操作（セッション開始/終了、品目の追加・削除・ステータス更新、売り切れ登録、呼び出し対応）を提供する |
-| Requirements | 2.4, 3.1-3.4, 4.1-4.4, 5.1-5.7, 6.1-6.10, 7.1, 7.3, 7.4 |
+| Requirements | 2.4, 3.1-3.5, 4.1-4.4, 5.1-5.7, 6.1-6.10, 7.1, 7.3, 7.4 |
 
 **Responsibilities & Constraints**
 - `authenticated`ロールかつJWTの`device_role`クレームが`kitchen`または`register`である場合のみ実行を許可する（関数内で`auth.jwt()`を検証）
 - `startSession`は入力された`partySize`をセッションに記録し、部分ユニークインデックス違反を`SESSION_ALREADY_ACTIVE`として返す（要件3.1, 3.2, 3.4）
 - `closeSession`はアクティブなセッションのみを対象とし、既に`closed`のセッションに対しては`SESSION_NOT_ACTIVE`を返す
+- `updatePartySize`は対象セッションが`active`である場合のみ人数を更新し、既に`closed`のセッションに対しては`SESSION_NOT_ACTIVE`を返す。実行前確認はUI層（RegisterConsole）の責務とする（要件3.5）
 - `addOrderItem`は`CustomerOrderingGateway.submitOrder`と同じ検証（セッションが`active`か、品目が売り切れでないか、`optionSelections`が品目の`options`定義と整合しているか）をレジ/厨房起点の追加にも適用する（要件5.5）
 - `removeOrderItem`は指定された注文明細を削除する。会計後の履歴改ざんを防ぐため、対象セッションが既に`closed`の場合は`ORDER_ITEM_NOT_FOUND`として拒否する（要件5.6）
 - `updateOrderItemStatus`は対象の注文明細が属する品目のジャンルを見て、許可される遷移を判定する。フード/一品ジャンルは`received → in_progress → done`、ドリンクジャンルは`received → done`のみを許可する（要件6.3, 6.4, 5.7）
@@ -398,6 +400,7 @@ type CallRequestError = { code: "SESSION_NOT_ACTIVE" } | { code: "CALL_ALREADY_O
 interface StaffOperationsGateway {
   startSession(input: StartSessionInput): Promise<Result<TableSession, StartSessionError>>;
   closeSession(input: CloseSessionInput): Promise<Result<TableSession, CloseSessionError>>;
+  updatePartySize(input: UpdatePartySizeInput): Promise<Result<TableSession, UpdatePartySizeError>>;
   addOrderItem(input: AddOrderItemInput): Promise<Result<OrderItemSummary, AddOrderItemError>>;
   removeOrderItem(input: RemoveOrderItemInput): Promise<Result<{ orderItemId: string }, RemoveOrderItemError>>;
   updateOrderItemStatus(input: UpdateOrderItemStatusInput): Promise<Result<OrderItemSummary, UpdateOrderItemStatusError>>;
@@ -453,6 +456,13 @@ interface CloseSessionInput {
 }
 
 type CloseSessionError = { code: "SESSION_NOT_ACTIVE" } | { code: "FORBIDDEN" };
+
+interface UpdatePartySizeInput {
+  sessionId: string;
+  partySize: number;
+}
+
+type UpdatePartySizeError = { code: "SESSION_NOT_ACTIVE" } | { code: "FORBIDDEN" };
 
 interface UpdateOrderItemStatusInput {
   orderItemId: string;
@@ -589,7 +599,7 @@ type DeviceProvisioningError = { code: "INVALID_SETUP_CODE" } | { code: "NOT_PRO
 厨房画面。`StaffOperationsGateway`と`RealtimeFeed`に依存し、フードボード／ドリンクボード／売り切れボードの3タブを1台のタブレットで切り替える構成とする。各ボードは卓・受注時刻が識別できる一覧表示とジャンルに応じたステータス更新UIを提供し、フードボードの未対応列は一品ジャンルを優先表示し（要件6.7、6.8）、調理完了列は直近に完了したものを上部に表示する（要件6.10）。売り切れの登録・解除操作は実行前に確認ダイアログを表示し、確認後にのみ`setSoldOut`を呼び出す（要件7.1, 7.3）。
 
 #### RegisterConsole
-レジ通常モード画面。`StaffOperationsGateway`（P0）と`RealtimeFeed`（P1、金額表示の即時更新用）に依存する。全卓を「テーブル」「カウンター」のエリアに分けたマップ表示とし、各卓のタイルに人数・経過時間・合計金額・呼び出し中バッジを表示する（要件5.4）。タイルを選択すると卓の詳細（注文明細・ステータス変更・品目の追加/削除・会計）を操作するパネルを開く。入店操作は人数の入力を伴い（要件3.1, 3.4）、品目の追加・削除・ステータス変更・会計確定はいずれも実行前に確認ダイアログを表示し、確認後にのみ対応する`StaffOperationsGateway`のメソッドを呼び出す（要件3.3, 5.5-5.7）。
+レジ通常モード画面。`StaffOperationsGateway`（P0）と`RealtimeFeed`（P1、金額表示の即時更新用）に依存する。全卓を「テーブル」「カウンター」のエリアに分けたマップ表示とし、各卓のタイルに人数・経過時間・合計金額・呼び出し中バッジを表示する（要件5.4）。タイルを選択すると卓の詳細（注文明細・ステータス変更・品目の追加/削除・会計）を操作するパネルを開く。入店操作は人数の入力を伴い（要件3.1, 3.4）、来店中の人数変更・品目の追加・削除・ステータス変更・会計確定はいずれも実行前に確認ダイアログを表示し、確認後にのみ対応する`StaffOperationsGateway`のメソッドを呼び出す（要件3.3, 3.5, 5.5-5.7）。
 
 ## Data Models
 
@@ -719,6 +729,7 @@ Supabaseのログ／メトリクスをベースラインとし、本spec固有�
 - `list_kitchen_feed`は未対応一覧で一品ジャンルを受注時刻に関わらず先頭に並べる（6.7）
 - `list_kitchen_feed`は調理完了列を`status_updated_at`の降順（直近完了が先頭）に並べる（6.10）
 - `start_session`は入力された`partySize`をセッションに記録する（3.1, 3.4）
+- `update_party_size`はセッションが`closed`の場合に`SESSION_NOT_ACTIVE`を返し、人数を変更しない（3.5）
 - `add_order_item`はセッションが`closed`の場合に`SESSION_NOT_ACTIVE`を返し、何も挿入しない（5.5）
 - `add_order_item`は売り切れ品目に対して`ITEM_SOLD_OUT`を返す（5.5）
 - `remove_order_item`はセッションが既に`closed`の注文明細に対して`ORDER_ITEM_NOT_FOUND`を返す（5.6）
@@ -734,6 +745,7 @@ Supabaseのログ／メトリクスをベースラインとし、本spec固有�
 - 客がQR経由でメニュー（写真・オプション選択を含む）を閲覧→注文送信→厨房のフードボード/ドリンクボードにジャンルに応じて反映→ステータス更新→レジで金額確認→会計操作でセッション終了、という主要ユーザージャーニー全体（要件1, 3, 4, 5, 6を横断）
 - 厨房の売り切れボードで品目を売り切れ登録→確認ダイアログで「いいえ」を選ぶと状態が変わらず、確認すると客側の新規注文画面で当該品目が選択不可になる（7.1, 7.2, 7.3）
 - レジで入店操作を行うと人数入力が求められ、卓マップのタイルに人数と経過時間が表示される（3.1, 3.4, 5.4）
+- 来店中の卓で人数変更操作を行うと確認ダイアログが表示され、「いいえ」を選ぶと人数が変わらず、確認すると卓マップ・卓詳細パネルの人数表示に反映される（3.5）
 - レジで卓の詳細パネルから品目を追加/削除しようとすると確認ダイアログが表示され、「いいえ」を選ぶと変更されず、確認すると注文明細と合計金額に反映される（5.5, 5.6）
 - セッション終了後、旧タブ（クライアント側に古いセッションIDが残った状態）から注文を送信すると拒否される（1.9, 4.2, 4.4）
 
