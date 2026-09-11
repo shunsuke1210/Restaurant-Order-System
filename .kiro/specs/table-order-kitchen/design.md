@@ -342,7 +342,8 @@ type OrderItemStatus = "received" | "in_progress" | "done";
 type SubmitOrderError =
   | { code: "SESSION_NOT_ACTIVE" }
   | { code: "ITEM_SOLD_OUT"; menuItemId: string }
-  | { code: "EMPTY_ORDER" };
+  | { code: "EMPTY_ORDER" }
+  | { code: "RATE_LIMITED" };
 
 interface CreateCallRequestInput {
   sessionId: string;
@@ -364,7 +365,7 @@ type CallRequestError = { code: "SESSION_NOT_ACTIVE" } | { code: "CALL_ALREADY_O
 **Implementation Notes**
 - Integration: `orders(session_id, idempotency_key)`にユニーク制約を張り、`submit_order`関数内でこの制約違反を`deduplicated: true`の成功応答に変換する
 - Validation: 品目ごとの`soldOut`はRPC内で再チェックし、クライアント表示のキャッシュに依存しない。`optionSelections`のキーが当該品目の`options`定義に存在しない場合は無視し、必須ではない選択が欠けている場合は`options`側の`default`値で補う
-- Risks: セッション単位のレート制限（`research.md`参照）を`submit_order`関数内に実装し、QRコード拡散による大量不正送信を緩和する
+- Risks: セッション単位のレート制限（`research.md`参照。例: 1セッションあたり1分間に一定回数を超える`submit_order`呼び出しは`RATE_LIMITED`として拒否する）を`submit_order`関数内に実装し、QRコード拡散による大量不正送信を緩和する
 
 #### StaffOperationsGateway
 

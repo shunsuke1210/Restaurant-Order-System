@@ -324,6 +324,10 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      submit_order: {
+        Args: { p_idempotency_key: string; p_items: Json; p_session_id: string }
+        Returns: Json
+      }
     }
     Enums: {
       [_ in never]: never

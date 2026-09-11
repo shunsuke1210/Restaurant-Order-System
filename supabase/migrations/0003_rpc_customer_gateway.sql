@@ -192,3 +192,379 @@ revoke execute on function public.get_ordering_context(uuid)
   from public, anon, authenticated;
 
 grant execute on function public.get_ordering_context(uuid) to anon;
+
+-- =========================================================================
+-- タスク3.2: submit_order RPC
+-- =========================================================================
+-- Requirements: 1.7, 1.8, 1.9, 1.10, 7.2
+-- Design: design.mdの CustomerOrderingGateway コンポーネント（Responsibilities &
+--   Constraints「注文送信時は必ずサーバー側で...再検証する（クライアントの表示
+--   状態を信用しない）」「同一品目でもオプションの選択内容が異なれば別の注文明細
+--   として登録する（要件1.8）」、Service Interface: submitOrder /
+--   SubmitOrderInput / SubmitOrderResult / OrderWithItems / OrderItemSummary /
+--   SubmitOrderError、Preconditions/Postconditions/Invariants、
+--   Implementation Notes）と、「注文送信〜厨房反映フロー」シーケンス図の
+--   Key Decisions「get_ordering_contextとsubmit_orderを分離することで、注文
+--   送信の直前に必ずセッション有効性を再検証する」を参照。get_ordering_context
+--   （3.1）と同じCustomerOrderingGateway境界に属するため、ファイル冒頭の
+--   File Structure Plan通り本ファイルへ追記する（別ファイルへは分割しない）。
+
+-- =========================================================================
+-- 設計判断3: 冪等性 — orders(session_id, idempotency_key)の一意制約違反を
+--   deduplicated: trueの成功応答へ変換する
+-- =========================================================================
+-- design.md Implementation Notes「orders(session_id, idempotency_key)にユニーク
+-- 制約を張り、submit_order関数内でこの制約違反をdeduplicated: trueの成功応答に
+-- 変換する」（0001_schema.sqlのorders_session_id_idempotency_key_key制約）を
+-- そのまま実装する。ordersへのINSERTをネストしたBEGIN/EXCEPTIONブロックで囲み、
+-- unique_violation（SQLSTATE 23505）だけを捕捉した場合に限り、新規の
+-- order_itemsを挿入せず、同一(session_id, idempotency_key)の既存orderと
+-- その明細を再取得して返す。PL/pgSQLのEXCEPTIONブロックは暗黙のSAVEPOINTを
+-- 張る標準機能であり、本関数はordersへのINSERTより前には一切DBへ書き込みを
+-- 行わない（品目検証は後述のとおりメモリ上のjsonbに蓄積するのみ）ため、
+-- 捕捉によって巻き戻される変更は実質存在しない。二重送信を招く典型例（通信
+-- リトライ、送信ボタンの連打）だけでなく、同一(session_id, idempotency_key)の
+-- リクエストが真に同時に到着した場合も、後着側がこの一意制約違反を検知して
+-- 自然にdeduplicated: trueへフォールバックするため、追加のアプリケーション側
+-- ロックなしで冪等性が成立する（research.mdのDesign Decisions「RPC集約方式」で
+-- 業務ルールを関数内に集約する方針とも一致する）。
+
+-- =========================================================================
+-- 設計判断4: 売り切れ品目を1件でも含む場合は送信全体を拒否する（全体ロール
+--   バック。部分成功は行わない）
+-- =========================================================================
+-- design.mdのsubmitOrderはPromise<Result<SubmitOrderResult, SubmitOrderError>>
+-- という単一のResultを返す形で定義されており、items配列の要素ごとに個別の
+-- Resultを返す型（例: ReadonlyArray<Result<OrderItemSummary, ...>>）にはなって
+-- いない。つまりAPI契約自体が「送信は丸ごと成功/丸ごと失敗のいずれかである」
+-- ことを前提にしている。加えてTesting Strategyは「submit_orderは売り切れ品目を
+-- 含む場合にITEM_SOLD_OUTを返す（1.4, 7.2）」と、"含む場合"という言い回しで
+-- 送信全体に対する単一のエラーとして書かれており、Invariants「SESSION_NOT_ACTIVE
+-- が返る場合、DBには何も書き込まれない」と対になる形で「ITEM_SOLD_OUTが返る
+-- 場合も同様に何も書き込まれない」と読むのが設計文書に最も忠実な解釈である。
+-- 以上から、1品目でも売り切れであれば送信全体を拒否し、売り切れでない他の
+-- 品目だけを部分的に受理することはしないという、より安全側かつ設計文書の
+-- 文言・型シグネチャの両方に忠実な解釈を採用する。
+-- 実装上は、全品目のoptions整合性チェック・スナップショット取得までを完了させた
+-- 中間結果（v_prepared_items、jsonb配列）を先に組み立ててから、その後で初めて
+-- ordersへのINSERTに着手する2パス構成にすることで、検証失敗時にDBへ一切
+-- 書き込まれていないことを保証する（3.1の設計判断1「jsonb一本化」と同じ方針で、
+-- このためだけの複合型は追加しない）。
+
+-- =========================================================================
+-- 設計判断5: エラーコード — 'P0400'（EMPTY_ORDER）・'P0409'（SESSION_NOT_ACTIVE）
+--   ・'P0410'（ITEM_SOLD_OUT）を新規に割り当てる
+-- =========================================================================
+-- 既存のカスタムSQLSTATE規約（本ファイル冒頭・0006・0007のコメント参照。
+-- SQLSTATEクラス'P0'配下で、組み込みのP0001-P0004、および既存のP0401・P0403・
+-- P0404と衝突しない未使用のサブコードを選ぶ）を踏襲する。
+--   'P0400' EMPTY_ORDER   : 400 Bad Requestを想起させる数字（品目0件は呼び出し
+--                           側の入力不備）
+--   'P0409' SESSION_NOT_ACTIVE: 409 Conflictを想起させる数字（対象セッションが
+--                           期待する'active'状態と矛盾する）
+--   'P0410' ITEM_SOLD_OUT : 410 Goneを想起させる数字（品目がもはや注文可能では
+--                           ない）。design.mdのSubmitOrderError型は
+--                           { code: "ITEM_SOLD_OUT"; menuItemId: string }と
+--                           menuItemIdを伴う構造を要求するため、RAISE EXCEPTIONの
+--                           USING DETAIL句に該当menu_item_idを文字列として
+--                           載せる（supabase-jsのPostgrestErrorはPostgres側の
+--                           DETAILフィールドを.detailsとして公開するため、将来の
+--                           TypeScriptラッパー（タスク3.4、本タスクのスコープ外）
+--                           はerror.detailsからmenuItemIdを取り出せる）。
+
+-- =========================================================================
+-- 設計判断6: 実在しないmenuItemIdに専用のエラーコードを割り当てない
+-- =========================================================================
+-- design.mdのSubmitOrderError型はSESSION_NOT_ACTIVE/ITEM_SOLD_OUT/EMPTY_ORDERの
+-- 3種のみを定義しており、「実在しないmenuItemId」というケースをモデル化して
+-- いない（客側UIは必ずgetOrderingContextが返したメニュー一覧からmenuItemIdを
+-- 選ぶ設計であり、通常操作では到達し得ない入力である）。0007の設計判断
+-- （p_roleが'kitchen'/'register'以外の場合をdevices.roleのCHECK制約による
+-- 自然なcheck_violationに委ね、専用バリデーションを追加しなかった）と同じ方針を
+-- 踏襲し、本関数でも専用ガードは追加しない。実在しないmenu_item_idに対しては
+-- v_menu_item（%rowtype変数）が全列NULLのまま後続処理へ進み、最終的に
+-- order_items.name_snapshot / unit_price_snapshotのNOT NULL制約（0001）に
+-- よって自然にnot_null_violationとして拒否される。この失敗は2パス構成の
+-- 2パス目（order_itemsへの実INSERT時点、ordersへの冪等INSERTより後）で
+-- 起きるが、関数全体が呼び出し元と同一のトランザクションとして実行される
+-- （PL/pgSQL関数から捕捉されない例外が伝播すると、そのトランザクション全体が
+-- 中断される）ため、直前に成功していたordersへのINSERTを含め、本呼び出しで
+-- 行ったすべての変更が破棄される。したがってこの経路でも「送信全体が失敗すれば
+-- 何も残らない」という不変条件（設計判断4）は保たれる。
+
+create or replace function public.submit_order(
+  p_session_id uuid,
+  p_idempotency_key text,
+  p_items jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_session_status text;
+  v_prepared_items jsonb := '[]'::jsonb;
+  v_item jsonb;
+  v_menu_item_id uuid;
+  v_quantity int;
+  v_note text;
+  v_client_options jsonb;
+  v_menu_item public.menu_items;
+  v_options_selected jsonb;
+  v_options_summary text;
+  v_summary_parts text[];
+  v_opt jsonb;
+  v_opt_id text;
+  v_opt_type text;
+  v_opt_label text;
+  v_opt_value jsonb;
+  v_order_id uuid;
+  v_order_created_at timestamptz;
+  v_deduplicated boolean := false;
+  v_items_result jsonb := '[]'::jsonb;
+  v_prepared jsonb;
+  v_row record;
+begin
+  -- 1. セッション有効性の検証（要件1.9）。存在しない場合も'closed'の場合も
+  --    区別せずSESSION_NOT_ACTIVEとして拒否する（design.mdのSubmitOrderError
+  --    型に「セッションが存在しない」ための別コードがないため。Preconditions
+  --    「submitOrder/createCallRequestは対象sessionIdが実在すること」を、
+  --    実在しない場合も含めてこの単一エラーコードで表現する）。
+  select status
+    into v_session_status
+    from public.table_sessions
+    where id = p_session_id;
+
+  if not found or v_session_status <> 'active' then
+    raise exception 'session % is not active', p_session_id
+      using errcode = 'P0409';
+  end if;
+
+  -- 2. 空配列の検証
+  if p_items is null
+     or jsonb_typeof(p_items) is distinct from 'array'
+     or jsonb_array_length(p_items) = 0 then
+    raise exception 'order must contain at least one item'
+      using errcode = 'P0400';
+  end if;
+
+  -- 3. 品目ごとの検証・スナップショット作成（2パス構成の1パス目）。ここでは
+  --    DBへの書き込みを一切行わず、挿入予定データをv_prepared_itemsへ蓄積する
+  --    だけに留める（設計判断4: 全体ロールバック方針）。
+  for v_item in select * from jsonb_array_elements(p_items) loop
+    v_menu_item_id := (v_item ->> 'menuItemId')::uuid;
+    v_quantity := (v_item ->> 'quantity')::int;
+    v_note := v_item ->> 'note';
+    v_client_options := coalesce(v_item -> 'optionSelections', '{}'::jsonb);
+
+    -- クライアントの表示状態を信用せず、現在のmenu_itemsを再取得する
+    -- （要件7.2、design.md「クライアントの表示状態を信用しない」原則）。
+    select *
+      into v_menu_item
+      from public.menu_items
+      where id = v_menu_item_id;
+
+    -- 実在しないmenuItemIdの扱いは設計判断6を参照（専用ガードを設けず、
+    -- 後続のNOT NULL制約による自然な失敗に委ねる）。
+
+    if v_menu_item.sold_out then
+      raise exception 'menu item % is sold out', v_menu_item_id
+        using errcode = 'P0410', detail = v_menu_item_id::text;
+    end if;
+
+    -- 3a. optionSelectionsの整合性チェック（要件1.6, 1.8、design.md
+    --     Validation「optionSelectionsのキーが当該品目のoptions定義に存在
+    --     しない場合は無視し、必須ではない選択が欠けている場合はoptions側の
+    --     default値で補う」）と、厨房/レジ表示用options_summaryの組み立て
+    --     （design.md Consistency & Integrityの例「塩」「わさび抜き」を参考に、
+    --     choiceは「ラベル: 選択値」、toggleはオンの場合のみラベル単独、
+    --     counterは0でない場合のみ「ラベル×値」の形式とする。厳密な
+    --     フォーマットはdesign.mdで規定されておらず実装者の裁量に委ねられて
+    --     いる部分）。
+    v_options_selected := '{}'::jsonb;
+    v_summary_parts := array[]::text[];
+
+    for v_opt in select * from jsonb_array_elements(coalesce(v_menu_item.options, '[]'::jsonb)) loop
+      v_opt_id := v_opt ->> 'id';
+      v_opt_type := v_opt ->> 'type';
+      v_opt_label := v_opt ->> 'label';
+
+      if v_client_options ? v_opt_id then
+        v_opt_value := v_client_options -> v_opt_id;
+      else
+        v_opt_value := v_opt -> 'default';
+      end if;
+
+      v_options_selected := v_options_selected || jsonb_build_object(v_opt_id, v_opt_value);
+
+      if v_opt_type = 'choice' then
+        if v_opt_value is not null then
+          v_summary_parts := array_append(v_summary_parts, v_opt_label || ': ' || (v_opt_value #>> '{}'));
+        end if;
+      elsif v_opt_type = 'toggle' then
+        if v_opt_value is not null and (v_opt_value #>> '{}')::boolean then
+          v_summary_parts := array_append(v_summary_parts, v_opt_label);
+        end if;
+      elsif v_opt_type = 'counter' then
+        if v_opt_value is not null and coalesce((v_opt_value #>> '{}')::numeric, 0) <> 0 then
+          v_summary_parts := array_append(v_summary_parts, v_opt_label || '×' || (v_opt_value #>> '{}'));
+        end if;
+      end if;
+    end loop;
+
+    if array_length(v_summary_parts, 1) is null then
+      v_options_summary := null;
+    else
+      v_options_summary := array_to_string(v_summary_parts, '、');
+    end if;
+
+    -- menu_item_id単位で集約せず、p_itemsの配列要素ごとに1件ずつ
+    -- v_prepared_itemsへ追加する（同一品目でもoptionSelectionsが異なれば
+    -- 別明細として登録する要件1.8を満たすため。ここでグルーピングしない
+    -- ことが本要件の実装そのものである）。
+    v_prepared_items := v_prepared_items || jsonb_build_array(
+      jsonb_build_object(
+        'menuItemId', v_menu_item_id,
+        'name', v_menu_item.name,
+        'unitPrice', v_menu_item.price,
+        'quantity', v_quantity,
+        'note', v_note,
+        'optionsSelected', v_options_selected,
+        'optionsSummary', v_options_summary
+      )
+    );
+  end loop;
+
+  -- 4. 冪等性: ordersへのINSERTを試みる。一意制約違反（同一session_id +
+  --    idempotency_keyの既存注文）を検知した場合のみ、新規のorder_items挿入を
+  --    行わず既存注文を再取得する（設計判断3参照）。idにはgen_random_uuid()を
+  --    明示的に呼ばず、0001_schema.sqlのorders.id列のdefault式に委ねる
+  --    （search_path=''のSECURITY DEFINER関数内でpgcryptoの
+  --    gen_random_uuid()をスキーマ修飾なしで直接呼ぶことを避けるため。
+  --    列のdefault式はテーブル定義時に解決済みのため、この関数のsearch_path
+  --    設定の影響を受けない）。
+  begin
+    insert into public.orders (session_id, idempotency_key)
+    values (p_session_id, p_idempotency_key)
+    returning id, created_at into v_order_id, v_order_created_at;
+
+    v_deduplicated := false;
+  exception
+    when unique_violation then
+      select id, created_at
+        into v_order_id, v_order_created_at
+        from public.orders
+        where session_id = p_session_id
+          and idempotency_key = p_idempotency_key;
+
+      v_deduplicated := true;
+  end;
+
+  if v_deduplicated then
+    -- 5a. 重複送信: 新規にorder_itemsを挿入せず、既存の明細をそのまま返す
+    --     （design.md Postconditions「同一idempotencyKeyでの再送は新規行を
+    --     作らず既存注文を返す（deduplicated: true）」）。挿入時点の自然順序の
+    --     近似としてstatus_updated_at（挿入時にdefault now()が入る列）で
+    --     並べる。
+    select coalesce(
+      jsonb_agg(
+        jsonb_build_object(
+          'id', oi.id,
+          'menuItemId', oi.menu_item_id,
+          'name', oi.name_snapshot,
+          'unitPrice', oi.unit_price_snapshot,
+          'quantity', oi.quantity,
+          'optionsSummary', oi.options_summary,
+          'status', oi.status,
+          'statusUpdatedAt', oi.status_updated_at
+        )
+        order by oi.status_updated_at, oi.id
+      ),
+      '[]'::jsonb
+    )
+    into v_items_result
+    from public.order_items oi
+    where oi.order_id = v_order_id;
+  else
+    -- 5b. 新規送信（2パス構成の2パス目）: v_prepared_itemsの各要素を1行ずつ
+    --     order_itemsへ挿入する。新規行のstatusは品目のgenreによらず常に
+    --     'received'から開始する（design.md Postconditions。genreは後続の
+    --     ステータス遷移許可にのみ影響し、初期状態には影響しない）。idと
+    --     status_updated_atは明示せず、0001_schema.sqlの列defaultに委ねる
+    --     （上記4番のコメントと同じ理由）。
+    for v_prepared in select * from jsonb_array_elements(v_prepared_items) loop
+      insert into public.order_items (
+        order_id,
+        menu_item_id,
+        name_snapshot,
+        unit_price_snapshot,
+        quantity,
+        status,
+        options_selected,
+        options_summary,
+        note
+      ) values (
+        v_order_id,
+        (v_prepared ->> 'menuItemId')::uuid,
+        v_prepared ->> 'name',
+        (v_prepared ->> 'unitPrice')::numeric,
+        (v_prepared ->> 'quantity')::int,
+        'received',
+        v_prepared -> 'optionsSelected',
+        v_prepared ->> 'optionsSummary',
+        v_prepared ->> 'note'
+      )
+      returning id, menu_item_id, name_snapshot, unit_price_snapshot, quantity, options_summary, status, status_updated_at
+        into v_row;
+
+      v_items_result := v_items_result || jsonb_build_array(
+        jsonb_build_object(
+          'id', v_row.id,
+          'menuItemId', v_row.menu_item_id,
+          'name', v_row.name_snapshot,
+          'unitPrice', v_row.unit_price_snapshot,
+          'quantity', v_row.quantity,
+          'optionsSummary', v_row.options_summary,
+          'status', v_row.status,
+          'statusUpdatedAt', v_row.status_updated_at
+        )
+      );
+    end loop;
+  end if;
+
+  return jsonb_build_object(
+    'order', jsonb_build_object(
+      'id', v_order_id,
+      'createdAt', v_order_created_at,
+      'items', v_items_result
+    ),
+    'deduplicated', v_deduplicated
+  );
+end;
+$$;
+
+comment on function public.submit_order(uuid, text, jsonb) is
+  '客（anonロール、無ログイン）が注文を送信するCustomerOrderingGatewayの
+   書き込み系RPC。対象セッションがactiveであること・各品目が売り切れでないことを
+   サーバー側で再検証し（クライアント表示を信用しない、要件7.2）、いずれかを
+   満たさない場合は何も挿入せずカスタムSQLSTATE ''P0409''（SESSION_NOT_ACTIVE）/
+   ''P0410''（ITEM_SOLD_OUT、DETAILに該当menuItemIdを含む）で例外を送出する。
+   品目が0件の場合は''P0400''（EMPTY_ORDER）。orders(session_id, idempotency_key)
+   の一意制約違反をdeduplicated: trueの成功応答へ変換することで冪等性を実現し
+   （設計判断3）、同一品目でもoptionSelectionsが異なれば別のorder_items行として
+   登録する（要件1.8、設計判断4）。optionSelectionsは品目のoptions定義に存在
+   しないキーを無視し、未指定のオプションはoptions側のdefault値で補ってから
+   options_selectedへ保存する。新規のorder_items.statusは品目のgenreに
+   よらず常に''received''から開始する。SECURITY DEFINER + search_path=''''は
+   get_ordering_context（3.1）と同じsearch_pathなりすまし対策を踏襲する。';
+
+-- =========================================================================
+-- EXECUTE権限: anonのみ（get_ordering_contextと同じ理由。詳細は本ファイル冒頭
+-- のget_ordering_context用EXECUTE権限コメントを参照。客側の真の匿名anon経路
+-- 専用であり、authenticated（厨房/レジタブレット）には付与しない）
+-- =========================================================================
+revoke execute on function public.submit_order(uuid, text, jsonb)
+  from public, anon, authenticated;
+
+grant execute on function public.submit_order(uuid, text, jsonb) to anon;

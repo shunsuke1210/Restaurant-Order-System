@@ -51,7 +51,7 @@
   - 観測可能な完了条件: アクティブセッションのない卓IDで呼び出すと`activeSession: null`が返る
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.12, 7.2_
 
-- [ ] 3.2 submit_order RPCの実装
+- [x] 3.2 submit_order RPCの実装
   - セッション有効性・売り切れ再検証・オプション整合性チェックを行い、`idempotencyKey`による重複送信の吸収、同一品目でもオプション別に別明細として登録する処理を実装する
   - 観測可能な完了条件: 同一`idempotencyKey`で2回送信しても`order_items`が重複挿入されず`deduplicated: true`が返る
   - _Requirements: 1.7, 1.8, 1.9, 1.10, 7.2_
@@ -68,6 +68,13 @@
   - 観測可能な完了条件: 各RPCのエラーコードがユニオン型として型チェックを通過し、呼び出し側で網羅的なswitchができる
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 1.10, 1.12, 2.1, 2.2, 2.3, 7.2_
   - _Depends: 3.1, 3.2, 3.3_
+
+- [ ] 3.5 submit_orderのセッション単位レート制限
+  - `submit_order`にセッション単位のレート制限（例: 1セッションあたり1分間に一定回数を超える呼び出しを拒否）を追加し、QRコード流出等による大量不正送信を緩和する（design.mdのSecurity Considerations／Risks、research.mdのRisks & Mitigations参照）
+  - 新しいエラーコード`RATE_LIMITED`をRPCとTypeScriptラッパーの両方に反映する
+  - 観測可能な完了条件: 同一セッションから許容回数を超えて短時間に送信すると`RATE_LIMITED`で拒否され、通常の送信間隔では拒否されない
+  - _Boundary: CustomerOrderingGateway_
+  - _Depends: 3.4_
 
 - [ ] 4. Core: StaffOperationsGateway（厨房/レジの唯一の書き込み経路）
 - [ ] 4.1 (P) start_session / close_session / update_party_size RPCの実装
