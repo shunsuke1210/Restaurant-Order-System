@@ -10,9 +10,14 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "db:start": "wsl -d Ubuntu -e bash -lc \"cd '/mnt/c/Users/shunsuke-iida/Documents/VSCode/Restaurant Order System' && supabase start\"",
+    "db:stop": "wsl -d Ubuntu -e bash -lc \"cd '/mnt/c/Users/shunsuke-iida/Documents/VSCode/Restaurant Order System' && supabase stop\"",
+    "db:reset": "wsl -d Ubuntu -e bash -lc \"cd '/mnt/c/Users/shunsuke-iida/Documents/VSCode/Restaurant Order System' && supabase db reset\"",
+    "db:types": "wsl -d Ubuntu -e bash -lc \"cd '/mnt/c/Users/shunsuke-iida/Documents/VSCode/Restaurant Order System' && supabase gen types typescript --local\" > src/lib/supabase/database.types.ts"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.116.0",
     "next": "16.3.4",
     "react": "19.2.8",
     "react-dom": "19.2.8"

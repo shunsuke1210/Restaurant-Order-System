@@ -8,7 +8,7 @@
   - 観測可能な完了条件: `next build` がエラーなく完了し、4ルートの空ページがブラウザで表示される
   - 観測可能な完了条件: サンプルの1件のテストが`npm test`で実行され成功する
 
-- [ ] 1.2 Supabaseクライアントとローカル開発環境の設定
+- [x] 1.2 Supabaseクライアントとローカル開発環境の設定
   - ブラウザ用Supabaseクライアント生成モジュールと、Supabase CLIによるローカルマイグレーション実行環境を整備する
   - `database.types.ts` をSupabase CLIで生成するスクリプトを用意する
   - 観測可能な完了条件: ローカルSupabaseに対して型生成コマンドが成功し、`database.types.ts` が生成される
@@ -266,3 +266,7 @@
   - 観測可能な完了条件: セッション終了後に旧セッションIDで送信した注文がすべて拒否されることがテストで確認される
   - _Requirements: 1.9, 3.1, 3.4, 4.2, 4.4, 5.4, 5.5, 5.6, 7.1, 7.2, 7.3_
   - _Depends: 9.2_
+
+## Implementation Notes
+- 開発環境ではDockerがWSL2「Ubuntu」ディストリビューション内でのみ動作する（Windows側にDocker Desktopなし）。Supabase CLIは同ディストリビューション内`~/bin/supabase`にインストール済みでログインシェルのPATHに登録済み。`supabase`系コマンドは必ず `wsl -d Ubuntu -e bash -lc "cd '/mnt/c/Users/shunsuke-iida/Documents/VSCode/Restaurant Order System' && supabase <args>"` 経由で実行する。日常操作は`package.json`の`db:start`/`db:stop`/`db:reset`/`db:types`スクリプト（1.2で追加済み）がこの経路をラップしているのでそちらを使う。
+- Supabase CLI 2.117.0はローカル起動時にキーを「Publishable」「Secret」として表示するが、内部的には引き続きレガシーのJWT形式`anon`/`service_role`キーと同等に扱われ、`anon`ロール経路はPublishable keyで正しく解決されることを1.2のレビューで実機検証済み。ただし`authenticated`ロール＋`device_role`カスタムクレームの経路（Custom Access Token Hook, DeviceIdentityProvider）は未検証であり、`supabase/config.toml`は現在`auth.enable_anonymous_sign_ins = false`（デフォルト）になっている。**タスク2.1（Custom Access Token Hook）着手時に、匿名サインインを有効化した上でdevice_roleクレームがセッションJWTに正しく含まれることを実機で確認すること。**
