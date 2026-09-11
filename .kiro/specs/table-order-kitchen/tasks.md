@@ -27,7 +27,7 @@
   - _Requirements: 8.1, 8.2, 8.3_
 
 - [ ] 2. Foundation: デバイス識別基盤
-- [ ] 2.1 Custom Access Token Hookとdevice_roleクレーム
+- [x] 2.1 Custom Access Token Hookとdevice_roleクレーム
   - `devices`テーブルを参照し、JWT発行時に`device_role`クレームを埋め込むCustom Access Token Hook関数を実装する
   - 観測可能な完了条件: プロビジョニング済みデバイスでサインインすると、発行されたJWTに`device_role`クレームが含まれる
   - _Requirements: 8.2, 8.3_
