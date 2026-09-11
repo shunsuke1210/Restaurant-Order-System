@@ -13,7 +13,7 @@
   - `database.types.ts` をSupabase CLIで生成するスクリプトを用意する
   - 観測可能な完了条件: ローカルSupabaseに対して型生成コマンドが成功し、`database.types.ts` が生成される
 
-- [ ] 1.3 コアスキーマのマイグレーション作成
+- [x] 1.3 コアスキーマのマイグレーション作成
   - `stores`/`tables`/`table_sessions`（`party_size`列を含む）/`menu_items`（`genre`/`options` jsonb/`image_url`/`sold_out`列を含む）/`orders`（`idempotency_key`列を含む）/`order_items`（`status`/`status_updated_at`/`name_snapshot`/`unit_price_snapshot`/`options_selected`/`options_summary`列を含む）/`call_requests`/`devices` の各テーブルを作成する
   - `table_sessions(table_id) WHERE status = 'active'` の部分ユニークインデックスを作成する
   - `orders(session_id, idempotency_key)` のユニーク制約と、`order_items(status, status_updated_at)`の複合インデックスを作成する
@@ -279,3 +279,4 @@
 ## Implementation Notes
 - 開発環境ではDockerがWSL2「Ubuntu」ディストリビューション内でのみ動作する（Windows側にDocker Desktopなし）。Supabase CLIは同ディストリビューション内`~/bin/supabase`にインストール済みでログインシェルのPATHに登録済み。`supabase`系コマンドは必ず `wsl -d Ubuntu -e bash -lc "cd '/mnt/c/Users/shunsuke-iida/Documents/VSCode/Restaurant Order System' && supabase <args>"` 経由で実行する。日常操作は`package.json`の`db:start`/`db:stop`/`db:reset`/`db:types`スクリプト（1.2で追加済み）がこの経路をラップしているのでそちらを使う。
 - Supabase CLI 2.117.0はローカル起動時にキーを「Publishable」「Secret」として表示するが、内部的には引き続きレガシーのJWT形式`anon`/`service_role`キーと同等に扱われ、`anon`ロール経路はPublishable keyで正しく解決されることを1.2のレビューで実機検証済み。ただし`authenticated`ロール＋`device_role`カスタムクレームの経路（Custom Access Token Hook, DeviceIdentityProvider）は未検証であり、`supabase/config.toml`は現在`auth.enable_anonymous_sign_ins = false`（デフォルト）になっている。**タスク2.1（Custom Access Token Hook）着手時に、匿名サインインを有効化した上でdevice_roleクレームがセッションJWTに正しく含まれることを実機で確認すること。**
+- 1.3でPostgres連携の統合テスト（`pg`クライアント）を追加した結果、`npm test`はローカルSupabaseスタック（`npm run db:start`）が起動していないと失敗する（ECONNREFUSED、フェイルファストで原因は明確）。本プロジェクトはPostgres RPCが中心のためこれは許容し、各タスクの実装者は作業前に`npm run db:start`を実行すること。RPCタスク（3.x/4.x）でテスト本数が増えてきたら、`test:unit`（DB不要・高速）と`test:integration`（DB必須）へのスクリプト分割を検討する。
