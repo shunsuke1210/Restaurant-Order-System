@@ -20,7 +20,7 @@
   - 観測可能な完了条件: マイグレーション適用後、同一卓に対して2件目のアクティブセッションをINSERTすると一意制約違反になる
   - _Requirements: 1.5, 1.6, 3.4, 4.1, 6.2, 6.3, 6.4, 6.10, 7.4_
 
-- [ ] 1.4 RLSポリシーのマイグレーション作成
+- [x] 1.4 RLSポリシーのマイグレーション作成
   - 全テーブルでRLSを有効化し、`anon`/`authenticated`ロールへのINSERT/UPDATE/DELETE直接権限を付与しない
   - `menu_items` のSELECTのみ `anon` に許可する
   - 観測可能な完了条件: `anon`ロールで`table_sessions`への直接INSERTを試みると拒否される
