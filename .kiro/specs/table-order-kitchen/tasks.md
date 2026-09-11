@@ -33,7 +33,7 @@
   - _Requirements: 8.2, 8.3_
   - _Depends: 1.3_
 
-- [ ] 2.2 device_role検証ヘルパーとFORBIDDEN境界の共通化
+- [x] 2.2 device_role検証ヘルパーとFORBIDDEN境界の共通化
   - 各RPC関数冒頭で共通利用する`assert_device_role(text[])`ヘルパー関数を実装する
   - 観測可能な完了条件: 許可されていない`device_role`のJWTでヘルパーを呼び出すと例外（FORBIDDEN相当）が送出される
   - _Requirements: 8.2, 8.3_
