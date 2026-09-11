@@ -46,7 +46,7 @@
   - _Depends: 2.1_
 
 - [ ] 3. Core: CustomerOrderingGateway（客側の唯一の書き込み経路）
-- [ ] 3.1 get_ordering_context RPCの実装
+- [x] 3.1 get_ordering_context RPCの実装
   - 卓IDからアクティブセッションの有無・メニュー一覧（`imageUrl`/`options`/`soldOut`含む）・`confirmedTotal`を返すRPCを実装する
   - 観測可能な完了条件: アクティブセッションのない卓IDで呼び出すと`activeSession: null`が返る
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.12, 7.2_

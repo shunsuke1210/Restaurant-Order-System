@@ -308,6 +308,7 @@ export type Database = {
         Returns: undefined
       }
       custom_access_token_hook: { Args: { event: Json }; Returns: Json }
+      get_ordering_context: { Args: { p_table_id: string }; Returns: Json }
       provision_device: {
         Args: { p_role: string; p_setup_code: string; p_store_id: string }
         Returns: {
