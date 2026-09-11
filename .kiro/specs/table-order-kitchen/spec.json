@@ -1,0 +1,22 @@
+{
+  "feature_name": "table-order-kitchen",
+  "created_at": "2026-09-10T02:33:49Z",
+  "updated_at": "2026-09-11T06:00:00Z",
+  "language": "ja",
+  "phase": "tasks-generated",
+  "approvals": {
+    "requirements": {
+      "generated": true,
+      "approved": true
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": true,
+      "approved": true
+    }
+  },
+  "ready_for_implementation": true
+}

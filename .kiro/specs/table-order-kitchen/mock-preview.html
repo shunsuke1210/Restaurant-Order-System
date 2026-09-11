@@ -1,0 +1,1410 @@
+<title>セッション同期プレビュー</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700&family=Zen+Kaku+Gothic+New:wght@400;500;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#F6F1E4;
+    --surface:#FFFFFF;
+    --surface-2:#EFE7D4;
+    --surface-3:#E4D9BF;
+    --text:#242530;
+    --text-muted:#6B6C78;
+    --border:#DDD2B8;
+    --primary:#2C3A5C;
+    --primary-strong:#1C2841;
+    --on-primary:#F6F1E4;
+    --accent:#BF4E28;
+    --accent-strong:#9E3D1D;
+    --on-accent:#FBF2E9;
+    --status-pending:#7C8096;
+    --status-pending-bg:#E4E4EA;
+    --status-progress:#A9741C;
+    --status-progress-bg:#F3E2C1;
+    --status-done:#3F7A58;
+    --status-done-bg:#DCEBE1;
+    --soldout:#8A8378;
+    --soldout-bg:#E6DFCF;
+    --danger:#9E3D1D;
+    --shadow: 0 1px 2px rgba(35,30,20,0.08), 0 10px 26px -14px rgba(35,30,20,0.3);
+    --font-display: 'Shippori Mincho', serif;
+    --font-body: 'Zen Kaku Gothic New', 'Hiragino Kaku Gothic ProN', sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#15161C; --surface:#1E2028; --surface-2:#262936; --surface-3:#30333F;
+      --text:#EDE7D8; --text-muted:#9C9DAE; --border:#343747;
+      --primary:#93A2D6; --primary-strong:#B7C2E6; --on-primary:#141728;
+      --accent:#E38159; --accent-strong:#F0A180; --on-accent:#2B1006;
+      --status-pending:#A6AAC0; --status-pending-bg:#2A2C3A;
+      --status-progress:#E0AE5C; --status-progress-bg:#3A2F1C;
+      --status-done:#7FC79B; --status-done-bg:#1E3327;
+      --soldout:#A79E8C; --soldout-bg:#2C2A24; --danger:#E38159;
+      --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 14px 30px -16px rgba(0,0,0,0.65);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#15161C; --surface:#1E2028; --surface-2:#262936; --surface-3:#30333F;
+    --text:#EDE7D8; --text-muted:#9C9DAE; --border:#343747;
+    --primary:#93A2D6; --primary-strong:#B7C2E6; --on-primary:#141728;
+    --accent:#E38159; --accent-strong:#F0A180; --on-accent:#2B1006;
+    --status-pending:#A6AAC0; --status-pending-bg:#2A2C3A;
+    --status-progress:#E0AE5C; --status-progress-bg:#3A2F1C;
+    --status-done:#7FC79B; --status-done-bg:#1E3327;
+    --soldout:#A79E8C; --soldout-bg:#2C2A24; --danger:#E38159;
+    --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 14px 30px -16px rgba(0,0,0,0.65);
+  }
+
+  *{ box-sizing:border-box; }
+  body{ background:var(--bg); color:var(--text); font-family:var(--font-body); }
+  ::selection{ background:var(--accent); color:var(--on-accent); }
+  button{ font-family:inherit; }
+  :focus-visible{ outline:2px solid var(--primary); outline-offset:2px; }
+  @media (prefers-reduced-motion: reduce){ *{ transition:none !important; animation:none !important; } }
+
+  .page{ max-width:1400px; margin:0 auto; padding:28px 24px 40px; }
+
+  .topbar{
+    display:flex; align-items:flex-end; justify-content:space-between; gap:16px;
+    padding-bottom:18px; margin-bottom:24px; border-bottom:1px solid var(--border);
+    flex-wrap:wrap;
+  }
+  .brand{ display:flex; align-items:center; gap:14px; }
+  .brand-mark{
+    display:flex; align-items:center; justify-content:center;
+    width:44px; height:44px; border-radius:10px;
+    background:var(--primary); color:var(--on-primary);
+    font-family:var(--font-display); font-size:20px; font-weight:700;
+    flex-shrink:0;
+  }
+  .brand-name{ font-family:var(--font-display); font-size:22px; font-weight:700; letter-spacing:.02em; margin:0; text-wrap:balance; }
+  .brand-sub{ margin:2px 0 0; font-size:12.5px; color:var(--text-muted); }
+  .topbar-meta{ display:flex; align-items:center; gap:14px; }
+  .meta-pill{
+    font-size:11.5px; color:var(--text-muted); border:1px solid var(--border);
+    border-radius:999px; padding:4px 10px; letter-spacing:.04em;
+  }
+  .meta-clock{ font-family:var(--font-mono); font-size:13px; color:var(--text-muted); font-variant-numeric:tabular-nums; }
+
+  .stage{
+    display:flex; flex-wrap:wrap;
+    gap:22px; align-items:flex-start;
+  }
+
+  .device{ display:flex; flex-direction:column; gap:10px; flex:0 0 auto; max-width:100%; }
+  .device-phone{ width:340px; }
+  .device-kitchen{ width:680px; }
+  .device-register{ width:680px; }
+  .device-label{ display:flex; align-items:baseline; gap:8px; padding:0 4px; }
+  .device-label .name{ font-weight:700; font-size:14.5px; }
+  .device-sub{ font-size:11.5px; color:var(--text-muted); }
+
+  .device-screen{
+    background:var(--surface-2); border:1px solid var(--border); border-radius:20px;
+    padding:10px; box-shadow:var(--shadow); width:100%;
+  }
+
+  .screen-inner{
+    background:var(--surface); border-radius:13px; border:1px solid var(--border);
+    height:640px; overflow:hidden; position:relative; display:flex; flex-direction:column;
+  }
+  .device-kitchen .screen-inner, .device-register .screen-inner{ height:460px; }
+  .scroll-area{ overflow-y:auto; overflow-x:hidden; flex:1; min-height:0; display:flex; flex-direction:column; min-width:0; }
+
+  .mock-control{
+    display:flex; align-items:center; gap:8px; padding:8px 12px; flex-shrink:0;
+    border-bottom:1px dashed var(--border); background:var(--surface-2);
+    font-size:11.5px; color:var(--text-muted);
+  }
+  .mock-control select{
+    font-family:var(--font-mono); font-size:12px; color:var(--text);
+    background:var(--surface); border:1px solid var(--border); border-radius:6px;
+    padding:3px 6px;
+  }
+  .mock-control .tag{
+    font-size:10px; letter-spacing:.06em; border:1px solid var(--border);
+    border-radius:4px; padding:1px 5px; color:var(--text-muted);
+  }
+
+  .title-bar{ text-align:center; font-weight:700; font-size:13px; padding:12px 0 6px; letter-spacing:.03em; flex-shrink:0; }
+
+  .info-row{ display:flex; align-items:center; justify-content:space-between; gap:8px; padding:0 12px 8px; flex-wrap:wrap; flex-shrink:0; }
+  .table-chip{
+    font-family:var(--font-mono); font-weight:700; font-size:13px; background:var(--surface-2);
+    border:1px solid var(--border); border-radius:8px; padding:4px 10px;
+  }
+  .info-actions{ display:flex; gap:6px; }
+  .btn-badge{ position:relative; }
+  .badge{
+    position:absolute; top:-6px; right:-6px; background:var(--accent); color:var(--on-accent);
+    font-size:10px; min-width:16px; height:16px; border-radius:999px; display:flex; align-items:center;
+    justify-content:center; padding:0 3px; font-family:var(--font-mono);
+  }
+
+  .genre-tabs{ display:flex; gap:6px; padding:4px 10px 8px; overflow-x:auto; min-width:0; flex-shrink:0; }
+  .genre-tab{
+    flex-shrink:0; border:1px solid var(--border); background:var(--surface); color:var(--text-muted);
+    font-weight:700; font-size:12.5px; padding:7px 12px; border-radius:999px; cursor:pointer;
+  }
+  .genre-tab.active{ background:var(--accent); border-color:var(--accent); color:var(--on-accent); }
+
+  .subtabs{ display:flex; gap:5px; padding:0 10px 8px; overflow-x:auto; min-width:0; flex-shrink:0; }
+  .subtab{
+    flex-shrink:0; border:1px solid var(--border); background:transparent; color:var(--primary);
+    font-size:11.5px; font-weight:600; padding:5px 10px; border-radius:8px; cursor:pointer;
+  }
+
+  .subtitle-bar{
+    background:var(--surface-3); font-size:11.5px; font-weight:700; letter-spacing:.03em;
+    padding:6px 14px; margin-top:2px; color:var(--text);
+  }
+
+  .item-row{ display:flex; gap:10px; align-items:center; padding:9px 14px; border-bottom:1px solid var(--border); cursor:pointer; }
+  .item-row.disabled{ cursor:default; opacity:.6; }
+  .item-thumb{
+    width:52px; height:52px; border-radius:10px; flex-shrink:0; display:flex; align-items:center;
+    justify-content:center; font-size:22px;
+  }
+  .item-thumb-lg{ width:100%; height:150px; border-radius:12px; font-size:52px; }
+  .thumb-amber{ background:linear-gradient(135deg, color-mix(in srgb, var(--accent) 55%, var(--surface)), color-mix(in srgb, var(--accent) 15%, var(--surface))); }
+  .thumb-citrus{ background:linear-gradient(135deg, color-mix(in srgb, var(--status-progress) 65%, var(--surface)), color-mix(in srgb, var(--status-progress) 15%, var(--surface))); }
+  .thumb-green{ background:linear-gradient(135deg, color-mix(in srgb, var(--status-done) 55%, var(--surface)), color-mix(in srgb, var(--status-done) 15%, var(--surface))); }
+  .thumb-terracotta{ background:linear-gradient(135deg, color-mix(in srgb, var(--accent) 70%, var(--primary)), color-mix(in srgb, var(--accent) 25%, var(--surface))); }
+  .thumb-yellow{ background:linear-gradient(135deg, color-mix(in srgb, var(--status-progress) 45%, var(--surface-3)), color-mix(in srgb, var(--status-progress) 10%, var(--surface))); }
+  .thumb-blue{ background:linear-gradient(135deg, color-mix(in srgb, var(--primary) 55%, var(--surface)), color-mix(in srgb, var(--primary) 15%, var(--surface))); }
+  .thumb-cream{ background:linear-gradient(135deg, var(--surface-3), var(--surface-2)); }
+
+  .item-info{ flex:1; min-width:0; }
+  .item-name{ font-size:13px; font-weight:600; }
+  .item-name.soldout{ color:var(--soldout); }
+  .item-price{ font-family:var(--font-mono); font-size:11.5px; color:var(--text-muted); margin-top:2px; font-variant-numeric:tabular-nums; }
+  .item-chevron{ color:var(--text-muted); font-size:16px; flex-shrink:0; }
+  .soldout-pill{
+    font-size:10px; background:var(--soldout-bg); color:var(--soldout); border-radius:5px;
+    padding:1px 6px; margin-left:6px; letter-spacing:.03em;
+  }
+
+  .modal-overlay{
+    position:absolute; inset:0; background:rgba(20,18,12,.48); display:flex; justify-content:center;
+    border-radius:13px; z-index:5; padding:14px;
+  }
+  .modal-overlay.sheet{ align-items:flex-end; padding:0; }
+  .modal-overlay.center{ align-items:center; }
+  .modal-card{ background:var(--surface); width:100%; padding:16px; overflow-y:auto; }
+  .modal-overlay.sheet .modal-card{ border-radius:16px 16px 0 0; max-height:88%; }
+  .modal-overlay.center .modal-card{ border-radius:16px; max-width:270px; max-height:88%; text-align:center; box-shadow:var(--shadow); }
+  .modal-overlay.center .modal-card.wide{ max-width:440px; text-align:left; }
+
+  .option-group{ padding:10px 0; border-top:1px solid var(--border); }
+  .option-label{ font-size:12px; font-weight:700; margin-bottom:6px; }
+  .choice-row{ display:flex; gap:8px; }
+  .choice-btn{ flex:1; border:1px solid var(--border); background:var(--surface); padding:8px; border-radius:8px; font-size:12.5px; cursor:pointer; color:var(--text); }
+  .choice-btn.active{ background:var(--primary); border-color:var(--primary); color:var(--on-primary); }
+
+  .stepper{ display:flex; align-items:center; gap:6px; flex-shrink:0; }
+  .stepper button{
+    width:26px; height:26px; border-radius:7px; border:1px solid var(--border); background:var(--surface);
+    color:var(--text); font-size:14px; line-height:1; cursor:pointer;
+  }
+  .stepper button:disabled{ opacity:.35; cursor:not-allowed; }
+  .stepper .qty{ width:18px; text-align:center; font-family:var(--font-mono); font-size:13px; font-variant-numeric:tabular-nums; }
+
+  .switch{
+    width:38px; height:22px; border-radius:999px; border:1px solid var(--border); background:var(--surface-3);
+    position:relative; cursor:pointer; flex-shrink:0; display:inline-block;
+  }
+  .switch i{
+    position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%;
+    background:var(--surface); box-shadow:0 1px 2px rgba(0,0,0,.25); transition:transform .12s ease;
+  }
+  .switch.on{ background:var(--accent); }
+  .switch.on i{ transform:translateX(16px); background:var(--on-accent); }
+
+  .cart-bar{
+    border-top:1px solid var(--border); padding:10px 14px; display:flex; align-items:center;
+    justify-content:space-between; gap:10px; background:var(--surface); flex-shrink:0;
+  }
+  .cart-total{ font-family:var(--font-mono); font-size:15px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .cart-count{ font-size:11px; color:var(--text-muted); }
+
+  .order-total-bar{
+    flex-shrink:0; border-top:1px solid var(--border); background:var(--surface-2);
+    padding:10px 14px; display:flex; align-items:baseline; justify-content:space-between;
+  }
+  .order-total-bar .label{ font-size:11.5px; color:var(--text-muted); font-weight:600; }
+  .order-total-bar .amount{ font-family:var(--font-mono); font-size:17px; font-weight:700; font-variant-numeric:tabular-nums; }
+
+  .btn{ border:none; border-radius:9px; padding:8px 14px; font-size:13px; font-weight:700; cursor:pointer; font-family:var(--font-body); }
+  .btn:disabled{ opacity:.4; cursor:not-allowed; }
+  .btn-primary{ background:var(--primary); color:var(--on-primary); }
+  .btn-accent{ background:var(--accent); color:var(--on-accent); }
+  .btn-outline{ background:transparent; border:1px solid var(--border); color:var(--text); }
+  .btn-ghost{ background:transparent; color:var(--primary); padding:6px 10px; }
+  .btn-danger{ background:var(--danger); color:var(--on-accent); }
+  .btn-block{ width:100%; }
+  .btn-sm{ padding:5px 10px; font-size:12px; border-radius:7px; }
+
+  .back-bar{ display:flex; align-items:center; gap:8px; padding:12px 14px 6px; font-weight:700; font-size:14px; flex-shrink:0; }
+  .back-btn{ display:inline-flex; align-items:center; gap:2px; background:transparent; border:none; color:var(--primary); font-size:13.5px; font-weight:700; cursor:pointer; padding:4px 6px 4px 0; line-height:1; }
+  .back-btn .chevron{ font-size:18px; line-height:1; }
+
+  .section-label{ font-size:11px; letter-spacing:.08em; color:var(--text-muted); font-weight:700; padding:10px 16px 4px; }
+
+  .cart-line{ display:flex; align-items:center; gap:8px; padding:8px 14px; border-bottom:1px solid var(--border); }
+  .cart-line-info{ flex:1; min-width:0; }
+  .cart-line-name{ font-size:12.5px; font-weight:600; }
+  .cart-line-price{ font-family:var(--font-mono); font-size:11.5px; color:var(--text-muted); font-variant-numeric:tabular-nums; }
+
+  .history{ padding:2px 16px 14px; }
+  .history-item{ display:flex; justify-content:space-between; gap:10px; font-size:12px; color:var(--text-muted); padding:5px 0; border-bottom:1px dotted var(--border); }
+  .history-item:last-child{ border-bottom:none; }
+  .history-time{ font-family:var(--font-mono); font-variant-numeric:tabular-nums; flex-shrink:0; }
+
+  .empty-state{ flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; gap:8px; padding:24px; color:var(--text-muted); }
+  .empty-state .glyph{ font-size:26px; }
+  .empty-state p{ margin:0; font-size:13px; max-width:22em; }
+  .empty-state .strong{ color:var(--text); font-weight:700; font-size:14px; }
+
+  .screen-header{ padding:14px 16px 10px; display:flex; align-items:center; justify-content:space-between; gap:8px; flex-shrink:0; }
+  .screen-title{ font-size:15px; font-weight:700; }
+  .conn-dot{ display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--text-muted); }
+  .conn-dot i{ width:7px; height:7px; border-radius:50%; background:var(--status-done); display:inline-block; }
+  .conn-dot.off i{ background:var(--danger); }
+
+  .banner{ margin:0 14px 10px; padding:9px 12px; border-radius:10px; font-size:12.5px; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; flex-shrink:0; }
+  .banner.warn{ background:var(--status-progress-bg); color:var(--status-progress); border:1px solid color-mix(in srgb, var(--status-progress) 40%, transparent); }
+  .banner.accent{ background:var(--accent); color:var(--on-accent); }
+  .banner button{ background:transparent; border:1px solid currentColor; color:inherit; border-radius:7px; padding:3px 9px; font-size:11.5px; cursor:pointer; }
+
+  .tabs{ display:flex; gap:4px; padding:0 12px; border-bottom:1px solid var(--border); flex-shrink:0; }
+  .tab{ background:transparent; border:none; padding:9px 10px; font-size:12.5px; color:var(--text-muted); cursor:pointer; border-bottom:2px solid transparent; font-weight:600; }
+  .tab.active{ color:var(--primary); border-bottom-color:var(--primary); }
+
+  .kanban{ display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; padding:10px 10px 14px; flex:1; align-content:start; }
+  .kanban-col-head{ font-size:11px; font-weight:700; padding:5px 6px; border-radius:7px; text-align:center; letter-spacing:.02em; }
+  .kanban-col-head.pending{ background:var(--status-pending-bg); color:var(--status-pending); }
+  .kanban-col-head.progress{ background:var(--status-progress-bg); color:var(--status-progress); }
+  .kanban-col-head.done{ background:var(--status-done-bg); color:var(--status-done); }
+  .kanban-col{ display:flex; flex-direction:column; gap:7px; min-height:40px; }
+  .kanban-col-2{ display:grid; grid-template-columns:repeat(2, 1fr); align-content:start; }
+  .kanban-2{ grid-template-columns:repeat(2, 1fr); }
+  .kanban-4{ grid-template-columns:repeat(4, 1fr); }
+  .kanban-5{ grid-template-columns:repeat(5, 1fr); }
+
+  .order-card{ background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:8px; display:flex; flex-direction:column; gap:5px; }
+  .order-card-head{ display:flex; align-items:baseline; justify-content:space-between; gap:4px; }
+  .order-card-table{ font-size:12.5px; font-weight:700; }
+  .order-card-time{ font-family:var(--font-mono); font-size:10px; color:var(--text-muted); font-variant-numeric:tabular-nums; }
+  .order-card-items{ font-size:11px; color:var(--text-muted); line-height:1.5; }
+  .order-card .btn{ width:100%; }
+  .kanban-empty{ font-size:11px; color:var(--text-muted); text-align:center; padding:10px 4px; }
+
+  .soldout-summary{ margin:0 14px 8px; padding:9px 12px; border-radius:10px; background:var(--surface-2); border:1px solid var(--border); }
+  .soldout-summary.active{ background:var(--status-progress-bg); border-color:transparent; }
+  .soldout-summary-label{ font-size:12px; font-weight:700; }
+  .soldout-summary.active .soldout-summary-label{ color:var(--status-progress); }
+  .soldout-chips{ display:flex; flex-wrap:wrap; gap:6px; margin-top:7px; }
+  .soldout-chip{ font-size:11px; border:1px solid var(--border); background:var(--surface); border-radius:999px; padding:3px 10px; cursor:pointer; color:var(--text); }
+
+  .soldout-search{ padding:0 14px 8px; flex-shrink:0; }
+  .soldout-search input{
+    width:100%; padding:7px 10px; border:1px solid var(--border); border-radius:8px;
+    background:var(--surface); color:var(--text); font-size:12.5px; font-family:inherit;
+  }
+
+  .soldout-panel{ padding:0 12px 14px; flex:1; }
+  .soldout-row{ display:flex; align-items:center; justify-content:space-between; gap:10px; padding:9px 4px; border-bottom:1px solid var(--border); font-size:13px; }
+  .soldout-row:last-child{ border-bottom:none; }
+  .soldout-row-info{ display:flex; align-items:center; gap:10px; min-width:0; }
+  .item-thumb-sm{ width:36px; height:36px; font-size:16px; }
+
+  .area-label{ font-size:11px; font-weight:700; color:var(--text-muted); letter-spacing:.06em; padding:10px 12px 4px; }
+  .floor-row{ display:flex; flex-wrap:wrap; gap:8px; padding:0 12px 6px; }
+  .floor-box{
+    position:relative; width:104px; height:96px; border-radius:12px; border:1px solid var(--border);
+    background:var(--surface); display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:3px; cursor:pointer; padding:6px;
+  }
+  .floor-box.vacant{ border-style:dashed; color:var(--text-muted); }
+  .floor-box.occupied{ border-width:2px; border-color:var(--primary); }
+  .floor-box-label{ font-family:var(--font-mono); font-weight:700; font-size:16px; }
+  .floor-box-status{ font-size:10.5px; color:var(--text-muted); }
+  .floor-box-time{ font-family:var(--font-mono); font-size:11px; color:var(--text-muted); font-variant-numeric:tabular-nums; }
+  .floor-box-amount{ font-family:var(--font-mono); font-size:13px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .floor-box-call{
+    position:absolute; top:-7px; right:-7px; background:var(--accent); color:var(--on-accent);
+    font-size:9.5px; font-weight:700; padding:2px 7px; border-radius:999px;
+  }
+
+  .table-list{ padding:8px 10px 14px; display:flex; flex-direction:column; gap:8px; }
+  .table-card{ border:1px solid var(--border); border-radius:12px; padding:10px 12px; background:var(--surface); }
+  .table-card-top{ display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .table-name-row{ display:flex; align-items:center; gap:8px; }
+  .table-name{ font-weight:700; font-size:14px; }
+  .status-badge{ font-size:10.5px; padding:2px 8px; border-radius:999px; font-weight:600; letter-spacing:.02em; }
+  .status-badge.vacant{ background:var(--surface-3); color:var(--text-muted); }
+  .status-badge.active{ background:var(--status-done-bg); color:var(--status-done); }
+  .table-meta{ font-size:11px; color:var(--text-muted); margin-top:2px; font-family:var(--font-mono); font-variant-numeric:tabular-nums; }
+  .table-items{ margin:8px 0; font-size:12px; }
+  .table-item-row{ display:flex; justify-content:space-between; gap:8px; padding:2px 0; color:var(--text-muted); }
+  .table-total-row{ display:flex; justify-content:space-between; align-items:baseline; padding-top:6px; margin-top:4px; border-top:1px solid var(--border); font-weight:700; }
+  .table-total-row .amount{ font-family:var(--font-mono); font-size:15px; font-variant-numeric:tabular-nums; }
+  .table-actions{ display:flex; gap:8px; margin-top:8px; }
+  .session-id{ font-family:var(--font-mono); font-size:10px; color:var(--text-muted); }
+
+  .foot-note{ margin-top:26px; padding-top:14px; border-top:1px solid var(--border); font-size:11.5px; color:var(--text-muted); max-width:70ch; line-height:1.6; }
+
+  @media (max-width:720px){
+    .screen-inner{ height:600px; }
+    .kanban{ grid-template-columns:1fr; }
+  }
+</style>
+
+<div class="page">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">卓</span>
+      <div>
+        <p class="brand-name">たくみ屋オーダー系統</p>
+        <p class="brand-sub">table-order-kitchen ｜ 客注文・厨房・レジ 同時プレビュー</p>
+      </div>
+    </div>
+    <div class="topbar-meta">
+      <span class="meta-pill">DESIGN REVIEW MOCK</span>
+      <span class="meta-clock" id="clock">--:--:--</span>
+    </div>
+  </header>
+
+  <main class="stage">
+    <section class="device device-phone">
+      <div class="device-label"><span class="name">客注文</span><span class="device-sub">客のスマートフォン（BYOD・ログイン不要）</span></div>
+      <div class="device-screen"><div class="screen-inner" id="customerScreen"></div></div>
+    </section>
+
+    <section class="device device-kitchen">
+      <div class="device-label"><span class="name">厨房</span><span class="device-sub">横向きタブレット1台・フード/ドリンク/売り切れをタブで切替・ログイン不要</span></div>
+      <div class="device-screen"><div class="screen-inner" id="kitchenScreen"></div></div>
+    </section>
+
+    <section class="device device-register">
+      <div class="device-label"><span class="name">レジ（通常モード）</span><span class="device-sub">横向きタブレット・卓マップ表示・ログイン不要</span></div>
+      <div class="device-screen"><div class="screen-inner" id="registerScreen"></div></div>
+    </section>
+  </main>
+
+  <p class="foot-note">
+    ※ 3画面は同じ疑似データ（卓・来店セッション・注文・メニュー）を共有しているモックです。いずれかの画面で操作すると、他の画面にも反映されます。破線で囲った操作（卓の切り替え・接続の切断）はプレビュー確認用の補助で、実際の製品UIには含まれません。メニュー画像は本モックでは色とアイコンのプレースホルダーです。オーナーモード（商品登録・売上管理）画面は別途用意します。厨房はフード/ドリンク/売り切れの3つのボードを1台のタブレットでタブ切替する構成です。
+  </p>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  var GENRES = [
+    { id:'osusume', label:'おすすめ' },
+    { id:'ippin', label:'一品' },
+    { id:'food', label:'フード' },
+    { id:'drink', label:'ドリンク' }
+  ];
+  var SUBTABS = {
+    ippin: [ {id:'otsumami', label:'おつまみ'}, {id:'salad', label:'サラダ'} ],
+    food: [ {id:'sashimi', label:'刺身'}, {id:'yakimono', label:'焼き物'}, {id:'gohan', label:'ご飯もの'} ],
+    drink: [ {id:'soft', label:'ソフトドリンク'}, {id:'nonalc', label:'ノンアルコール'}, {id:'beer', label:'ビール・ハイボール'}, {id:'sour', label:'サワー'}, {id:'other', label:'その他'} ]
+  };
+
+  var seq = 100;
+  function nextId(prefix){ seq += 1; return prefix + seq; }
+  var now = Date.now();
+
+  var state = {
+    tables: [
+      { id:'t1', label:'C1' },
+      { id:'t2', label:'C2' },
+      { id:'t3', label:'C3' },
+      { id:'t4', label:'C4' },
+      { id:'t5', label:'C5' },
+      { id:'t6', label:'C6' },
+      { id:'t7', label:'T1' },
+      { id:'t8', label:'T2' },
+      { id:'t9', label:'T3' },
+      { id:'t10', label:'T4' },
+      { id:'t11', label:'T5' }
+    ],
+    menu: [
+      { id:'m1', genre:'drink', sub:'beer', name:'生ビール', price:580, soldOut:false, emoji:'🍺', hue:'amber', recommend:true },
+      { id:'m2', genre:'drink', sub:'sour', name:'レモンサワー', price:480, soldOut:false, emoji:'🍋', hue:'citrus', recommend:true },
+      { id:'m3', genre:'drink', sub:'soft', name:'烏龍茶', price:380, soldOut:false, emoji:'🍵', hue:'green' },
+      { id:'m4', genre:'food', sub:'yakimono', name:'焼き鳥盛り合わせ', price:780, soldOut:false, emoji:'🍢', hue:'terracotta', recommend:true,
+        options:[ { id:'sauce', type:'choice', label:'味付け', choices:['たれ','塩'], default:'たれ' } ] },
+      { id:'m5', genre:'ippin', sub:'otsumami', name:'だし巻き玉子', price:580, soldOut:false, emoji:'🍳', hue:'yellow' },
+      { id:'m6', genre:'food', sub:'sashimi', name:'刺身盛り合わせ', price:1280, soldOut:true, emoji:'🐟', hue:'blue', recommend:true },
+      { id:'m7', genre:'ippin', sub:'salad', name:'ポテトサラダ', price:480, soldOut:false, emoji:'🥔', hue:'cream' },
+      { id:'m8', genre:'ippin', sub:'otsumami', name:'枝豆', price:380, soldOut:false, emoji:'🫛', hue:'green' },
+      { id:'m9', genre:'ippin', sub:'otsumami', name:'冷奴', price:380, soldOut:false, emoji:'🧊', hue:'blue' },
+      { id:'m10', genre:'ippin', sub:'otsumami', name:'たこわさ', price:420, soldOut:false, emoji:'🐙', hue:'terracotta' },
+      { id:'m11', genre:'ippin', sub:'salad', name:'海藻サラダ', price:450, soldOut:false, emoji:'🥗', hue:'green' },
+      { id:'m12', genre:'food', sub:'sashimi', name:'まぐろ刺し', price:680, soldOut:false, emoji:'🍣', hue:'blue' },
+      { id:'m13', genre:'food', sub:'yakimono', name:'手羽先焼き', price:520, soldOut:false, emoji:'🍗', hue:'terracotta' },
+      { id:'m14', genre:'food', sub:'gohan', name:'にぎり寿司盛り合わせ', price:980, soldOut:false, emoji:'🍣', hue:'blue',
+        options:[ { id:'wasabi', type:'toggle', label:'わさび抜き', default:false } ] },
+      { id:'m15', genre:'food', sub:'gohan', name:'鶏そぼろ丼', price:680, soldOut:false, emoji:'🍚', hue:'yellow' },
+      { id:'m16', genre:'drink', sub:'beer', name:'瓶ビール', price:680, soldOut:false, emoji:'🍾', hue:'amber',
+        options:[ { id:'glasses', type:'counter', label:'グラス', min:0, max:6, default:2 } ] },
+      { id:'m17', genre:'drink', sub:'beer', name:'ハイボール', price:480, soldOut:false, emoji:'🥃', hue:'amber' },
+      { id:'m18', genre:'drink', sub:'sour', name:'カルピスサワー', price:480, soldOut:false, emoji:'🥛', hue:'cream' },
+      { id:'m19', genre:'drink', sub:'nonalc', name:'ノンアルコールビール', price:480, soldOut:false, emoji:'🍺', hue:'green' },
+      { id:'m20', genre:'drink', sub:'soft', name:'コーラ', price:380, soldOut:false, emoji:'🥤', hue:'terracotta' },
+      { id:'m21', genre:'drink', sub:'other', name:'日本酒（冷）', price:680, soldOut:false, emoji:'🍶', hue:'blue' }
+    ],
+    sessions: [
+      { id:'s1', tableId:'t1', status:'active', startedAt: now - 26*60000, closedAt:null, partySize:2 },
+      { id:'s2', tableId:'t7', status:'active', startedAt: now - 3*60000, closedAt:null, partySize:4 }
+    ],
+    orders: [
+      { id:'o1', sessionId:'s1', tableId:'t1', createdAt: now - 18*60000,
+        items:[
+          { id:'oi1', menuId:'m1', name:'生ビール', unitPrice:580, qty:2, status:'done' },
+          { id:'oi2', menuId:'m4', name:'焼き鳥盛り合わせ', unitPrice:780, qty:1, optionsSummary:'塩', status:'in_progress' }
+        ] },
+      { id:'o2', sessionId:'s1', tableId:'t1', createdAt: now - 9*60000,
+        items:[
+          { id:'oi3', menuId:'m13', name:'手羽先焼き', unitPrice:520, qty:1, status:'received' }
+        ] },
+      { id:'o3', sessionId:'s2', tableId:'t7', createdAt: now - 2*60000,
+        items:[
+          { id:'oi4', menuId:'m8', name:'枝豆', unitPrice:380, qty:1, status:'received' },
+          { id:'oi5', menuId:'m2', name:'レモンサワー', unitPrice:480, qty:1, status:'received' }
+        ] }
+    ],
+    callRequests: [],
+    ui: {
+      kitchen: { tab:'food', connected:true, reconnectNotice:false, soldoutSearch:'', pendingToggle:null },
+      register: { openTableId:null, addMenuOpen:false, startingTableId:null, partySizeDraft:2, pendingAction:null },
+      customer: {
+        tableId: 't1',
+        genre: 'osusume',
+        screen: 'menu',
+        detailItem: null,
+        detailOptions: {},
+        detailQty: 1,
+        confirmOpen: false,
+        successOpen: false,
+        cartByTable: {}
+      }
+    }
+  };
+
+  function activeSessionFor(tableId){
+    for (var i=0;i<state.sessions.length;i++){
+      var s = state.sessions[i];
+      if (s.tableId === tableId && s.status === 'active') return s;
+    }
+    return null;
+  }
+  function tableLabel(tableId){
+    var t = state.tables.filter(function(x){ return x.id === tableId; })[0];
+    return t ? t.label : tableId;
+  }
+  function menuById(id){ return state.menu.filter(function(m){ return m.id === id; })[0]; }
+  function yen(n){ return '¥' + n.toLocaleString('ja-JP'); }
+  function elapsedMin(ts){ return Math.max(0, Math.floor((Date.now() - ts) / 60000)); }
+  function fmtClock(ts){
+    var d = new Date(ts);
+    function p(n){ return (n<10?'0':'')+n; }
+    return p(d.getHours())+':'+p(d.getMinutes());
+  }
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+
+  // ---- customer: cart -------------------------------------------------
+
+  function cartLines(tableId){
+    if (!state.ui.customer.cartByTable[tableId]) state.ui.customer.cartByTable[tableId] = [];
+    return state.ui.customer.cartByTable[tableId];
+  }
+  function cartTotal(tableId){
+    return cartLines(tableId).reduce(function(sum,l){ return sum + l.unitPrice*l.qty; }, 0);
+  }
+  function cartCount(tableId){
+    return cartLines(tableId).reduce(function(sum,l){ return sum + l.qty; }, 0);
+  }
+  function summarizeOptions(item, selections){
+    if (!item.options || !item.options.length) return null;
+    var parts = [];
+    item.options.forEach(function(opt){
+      var val = selections[opt.id];
+      if (opt.type === 'choice' && val) parts.push(val);
+      else if (opt.type === 'toggle' && val) parts.push(opt.label);
+      else if (opt.type === 'counter' && val > 0) parts.push(opt.label + '×' + val);
+    });
+    return parts.length ? parts.join('・') : null;
+  }
+  function addToCart(tableId, item, qty, selections){
+    var summary = summarizeOptions(item, selections);
+    var key = item.id + '|' + JSON.stringify(selections || {});
+    var lines = cartLines(tableId);
+    var existing = lines.filter(function(l){ return l.key === key; })[0];
+    if (existing){ existing.qty += qty; }
+    else { lines.push({ key:key, menuId:item.id, name:item.name, unitPrice:item.price, qty:qty, optionsSummary:summary }); }
+  }
+  function changeCartLineQty(tableId, key, delta){
+    var lines = cartLines(tableId);
+    var line = lines.filter(function(l){ return l.key === key; })[0];
+    if (!line) return;
+    line.qty += delta;
+    if (line.qty <= 0){ state.ui.customer.cartByTable[tableId] = lines.filter(function(l){ return l.key !== key; }); }
+    render();
+  }
+
+  // ---- customer: actions -------------------------------------------------
+
+  function setCustomerTable(tableId){
+    var cu = state.ui.customer;
+    cu.tableId = tableId; cu.screen = 'menu'; cu.genre = 'osusume';
+    cu.detailItem = null; cu.confirmOpen = false; cu.successOpen = false;
+    render();
+  }
+  function setGenre(genreId){
+    state.ui.customer.genre = genreId;
+    render();
+  }
+  function jumpToSub(subId){
+    var genreId = state.ui.customer.genre;
+    var container = document.querySelector('#customerScreen .scroll-area');
+    var target = document.getElementById('sec-'+genreId+'-'+subId);
+    if (!container || !target) return;
+    var containerRect = container.getBoundingClientRect();
+    var targetRect = target.getBoundingClientRect();
+    var delta = targetRect.top - containerRect.top;
+    container.scrollTo({ top: container.scrollTop + delta, behavior:'smooth' });
+  }
+  function openDetail(menuId){
+    var item = menuById(menuId);
+    if (!item || item.soldOut) return;
+    var selections = {};
+    (item.options || []).forEach(function(opt){ selections[opt.id] = opt.default; });
+    var cu = state.ui.customer;
+    cu.detailItem = menuId; cu.detailOptions = selections; cu.detailQty = 1;
+    render();
+  }
+  function closeDetail(){ state.ui.customer.detailItem = null; render(); }
+  function setDetailChoice(optId, value){ state.ui.customer.detailOptions[optId] = value; render(); }
+  function toggleDetailToggle(optId){
+    var cu = state.ui.customer;
+    cu.detailOptions[optId] = !cu.detailOptions[optId];
+    render();
+  }
+  function changeDetailCounter(optId, delta, min, max){
+    var cu = state.ui.customer;
+    var cur = cu.detailOptions[optId] || 0;
+    var next = cur + delta;
+    if (next < min) next = min;
+    if (max != null && next > max) next = max;
+    cu.detailOptions[optId] = next;
+    render();
+  }
+  function changeDetailQty(delta){
+    var cu = state.ui.customer;
+    var next = cu.detailQty + delta;
+    if (next < 1) next = 1;
+    if (next > 20) next = 20;
+    cu.detailQty = next;
+    render();
+  }
+  function confirmAddDetailToCart(){
+    var cu = state.ui.customer;
+    var item = menuById(cu.detailItem);
+    if (!item) return;
+    addToCart(cu.tableId, item, cu.detailQty, cu.detailOptions);
+    cu.detailItem = null;
+    render();
+  }
+  function openOrderStatus(){ state.ui.customer.screen = 'status'; render(); }
+  function closeOrderStatus(){ state.ui.customer.screen = 'menu'; render(); }
+  function openOrderConfirm(){
+    if (cartCount(state.ui.customer.tableId) === 0) return;
+    state.ui.customer.confirmOpen = true;
+    render();
+  }
+  function cancelOrderConfirm(){ state.ui.customer.confirmOpen = false; render(); }
+  function submitCustomerOrder(){
+    var cu = state.ui.customer;
+    var tableId = cu.tableId;
+    var session = activeSessionFor(tableId);
+    cu.confirmOpen = false;
+    if (!session){ render(); return; }
+    var lines = cartLines(tableId);
+    if (!lines.length){ render(); return; }
+    var items = lines.map(function(l){ return { id: nextId('oi'), menuId:l.menuId, name:l.name, unitPrice:l.unitPrice, qty:l.qty, optionsSummary:l.optionsSummary, status:'received' }; });
+    state.orders.push({ id: nextId('o'), sessionId: session.id, tableId: tableId, createdAt: Date.now(), items: items });
+    cu.cartByTable[tableId] = [];
+    cu.successOpen = true;
+    render();
+  }
+  function closeSuccess(){ state.ui.customer.successOpen = false; render(); }
+  function createCallRequest(tableId){
+    var session = activeSessionFor(tableId);
+    if (!session) return;
+    var existing = state.callRequests.filter(function(c){ return c.sessionId === session.id && c.status === 'open'; })[0];
+    if (existing) return;
+    state.callRequests.push({ id: nextId('c'), sessionId: session.id, tableId: tableId, status:'open', createdAt: Date.now() });
+    render();
+  }
+
+  // ---- staff actions -------------------------------------------------
+
+  function startSession(tableId, partySize){
+    if (activeSessionFor(tableId)) return;
+    state.sessions.push({ id: nextId('s'), tableId: tableId, status:'active', startedAt: Date.now(), closedAt:null, partySize: partySize });
+    render();
+  }
+  function beginStartSession(tableId){
+    state.ui.register.startingTableId = tableId;
+    state.ui.register.partySizeDraft = 2;
+    render();
+  }
+  function cancelStartSession(){ state.ui.register.startingTableId = null; render(); }
+  function changeStartPartySize(delta){
+    var next = state.ui.register.partySizeDraft + delta;
+    if (next < 1) next = 1;
+    if (next > 20) next = 20;
+    state.ui.register.partySizeDraft = next;
+    render();
+  }
+  function confirmStartSession(tableId){
+    var partySize = state.ui.register.partySizeDraft;
+    state.ui.register.startingTableId = null;
+    startSession(tableId, partySize);
+  }
+  function requestCloseSession(tableId){
+    state.ui.register.pendingAction = {
+      type:'close', tableId: tableId,
+      message: 'お会計完了でよろしいですか？\n完了するとQRコード情報がリセットされます',
+      confirmLabel: 'お会計完了'
+    };
+    render();
+  }
+  function confirmCloseSession(tableId){
+    var s = activeSessionFor(tableId);
+    if (s){ s.status = 'closed'; s.closedAt = Date.now(); }
+    render();
+  }
+  function openTableDetail(tableId){
+    state.ui.register.openTableId = tableId;
+    state.ui.register.addMenuOpen = false;
+    state.ui.register.startingTableId = null;
+    render();
+  }
+  function closeTableDetail(){
+    state.ui.register.openTableId = null;
+    state.ui.register.addMenuOpen = false;
+    state.ui.register.startingTableId = null;
+    state.ui.register.pendingAction = null;
+    render();
+  }
+  function toggleAddMenu(){ state.ui.register.addMenuOpen = !state.ui.register.addMenuOpen; render(); }
+  function addStaffItem(tableId, menuId){
+    var session = activeSessionFor(tableId);
+    var item = menuById(menuId);
+    if (!session || !item || item.soldOut) return;
+    state.orders.push({
+      id: nextId('o'), sessionId: session.id, tableId: tableId, createdAt: Date.now(),
+      items: [{ id: nextId('oi'), menuId: item.id, name: item.name, unitPrice: item.price, qty: 1, status: 'received' }]
+    });
+    render();
+  }
+  function removeOrderItem(orderId, itemId){
+    var order = state.orders.filter(function(o){ return o.id === orderId; })[0];
+    if (!order) return;
+    order.items = order.items.filter(function(it){ return it.id !== itemId; });
+    if (order.items.length === 0){
+      state.orders = state.orders.filter(function(o){ return o.id !== orderId; });
+    }
+    render();
+  }
+  function itemGenre(menuId){ var m = menuById(menuId); return m ? m.genre : 'food'; }
+  function isFoodGenre(g){ return g === 'ippin' || g === 'food'; }
+  function statusLabel(genre, status){
+    var labels = isFoodGenre(genre)
+      ? { received:'未対応', in_progress:'調理中', done:'調理完了' }
+      : { received:'未対応', done:'対応済み' };
+    return labels[status] || status;
+  }
+
+  function advanceItemStatus(orderId, itemId){
+    var order = state.orders.filter(function(o){ return o.id === orderId; })[0];
+    if (!order) return;
+    var item = order.items.filter(function(it){ return it.id === itemId; })[0];
+    if (!item) return;
+    var nextMap = isFoodGenre(itemGenre(item.menuId)) ? { received:'in_progress', in_progress:'done' } : { received:'done' };
+    var next = nextMap[item.status];
+    if (next){ item.status = next; render(); }
+  }
+  function jumpItemToDone(orderId, itemId){
+    var order = state.orders.filter(function(o){ return o.id === orderId; })[0];
+    if (!order) return;
+    var item = order.items.filter(function(it){ return it.id === itemId; })[0];
+    if (!item || item.status !== 'received') return;
+    item.status = 'done';
+    render();
+  }
+  function toggleSoldOut(menuId){
+    var m = state.menu.filter(function(x){ return x.id === menuId; })[0];
+    if (m){ m.soldOut = !m.soldOut; render(); }
+  }
+  function resolveCallRequest(callId){
+    var c = state.callRequests.filter(function(x){ return x.id === callId; })[0];
+    if (c){ c.status = 'resolved'; render(); }
+  }
+  function toggleKitchenConnection(){
+    var ui = state.ui.kitchen;
+    ui.connected = !ui.connected;
+    ui.reconnectNotice = ui.connected;
+    renderKitchen();
+    if (ui.connected){
+      setTimeout(function(){ ui.reconnectNotice = false; renderKitchen(); }, 2200);
+    }
+  }
+  function setKitchenTab(tab){ state.ui.kitchen.tab = tab; renderKitchen(); }
+  function setSoldoutSearch(value){ state.ui.kitchen.soldoutSearch = value; renderKitchen(); }
+
+  function requestToggleSoldOut(menuId){
+    var m = menuById(menuId);
+    if (!m) return;
+    var goingSoldOut = !m.soldOut;
+    state.ui.kitchen.pendingToggle = {
+      menuId: menuId,
+      message: goingSoldOut ? '「'+m.name+'」を売り切れにしますか？' : '「'+m.name+'」の売り切れを解除しますか？',
+      confirmLabel: goingSoldOut ? '売り切れにする' : '解除する'
+    };
+    renderKitchen();
+  }
+  function cancelPendingToggle(){ state.ui.kitchen.pendingToggle = null; renderKitchen(); }
+  function confirmPendingToggle(){
+    var p = state.ui.kitchen.pendingToggle;
+    if (!p) return;
+    state.ui.kitchen.pendingToggle = null;
+    toggleSoldOut(p.menuId);
+  }
+
+  function requestAddStaffItem(tableId, menuId){
+    var item = menuById(menuId);
+    if (!item || item.soldOut) return;
+    state.ui.register.pendingAction = {
+      type:'add', tableId:tableId, menuId:menuId,
+      message: '「'+item.name+'」を注文に追加しますか？', confirmLabel:'追加する'
+    };
+    render();
+  }
+  function requestRemoveItem(orderId, itemId){
+    var order = state.orders.filter(function(o){ return o.id === orderId; })[0];
+    var item = order ? order.items.filter(function(it){ return it.id === itemId; })[0] : null;
+    var label = item ? (item.name + (item.optionsSummary ? '（'+item.optionsSummary+'）' : '')) : '品目';
+    state.ui.register.pendingAction = {
+      type:'remove', orderId:orderId, itemId:itemId,
+      message: '「'+label+'」を削除しますか？この操作は取り消せません。', confirmLabel:'削除する'
+    };
+    render();
+  }
+  function requestAdvanceFromRegister(orderId, itemId){
+    var order = state.orders.filter(function(o){ return o.id === orderId; })[0];
+    var item = order ? order.items.filter(function(it){ return it.id === itemId; })[0] : null;
+    if (!item) return;
+    var genre = itemGenre(item.menuId);
+    var nextMap = isFoodGenre(genre) ? { received:'in_progress', in_progress:'done' } : { received:'done' };
+    var next = nextMap[item.status];
+    if (!next) return;
+    state.ui.register.pendingAction = {
+      type:'advance', orderId:orderId, itemId:itemId,
+      message: 'ステータスを「'+statusLabel(genre, item.status)+'」から「'+statusLabel(genre, next)+'」に変更しますか？',
+      confirmLabel:'変更する'
+    };
+    render();
+  }
+  function cancelPendingAction(){ state.ui.register.pendingAction = null; render(); }
+  function confirmPendingAction(){
+    var p = state.ui.register.pendingAction;
+    if (!p) return;
+    state.ui.register.pendingAction = null;
+    if (p.type === 'add') addStaffItem(p.tableId, p.menuId);
+    else if (p.type === 'remove') removeOrderItem(p.orderId, p.itemId);
+    else if (p.type === 'advance') advanceItemStatus(p.orderId, p.itemId);
+    else if (p.type === 'close'){
+      state.ui.register.openTableId = null;
+      confirmCloseSession(p.tableId);
+    }
+  }
+
+  // ---- render: customer -----------------------------------------------
+
+  function tableSwitcherHtml(tableId){
+    var options = state.tables.map(function(t){
+      return '<option value="'+t.id+'"'+(t.id===tableId?' selected':'')+'>'+escapeHtml(t.label)+'</option>';
+    }).join('');
+    return '<div class="mock-control"><span class="tag">プレビュー操作</span>この画面が表示している卓：'
+      + '<select data-action="select-table">'+options+'</select></div>';
+  }
+
+  function itemRowHtml(m){
+    var html = '<div class="item-row'+(m.soldOut?' disabled':'')+'"'+(m.soldOut?'':' data-action="open-detail" data-menu="'+m.id+'"')+'>';
+    html += '<div class="item-thumb thumb-'+m.hue+'">'+m.emoji+'</div>';
+    html += '<div class="item-info"><div class="item-name'+(m.soldOut?' soldout':'')+'">'+escapeHtml(m.name)+(m.soldOut?'<span class="soldout-pill">売り切れ</span>':'')+'</div>';
+    html += '<div class="item-price">'+yen(m.price)+'</div></div>';
+    if (!m.soldOut) html += '<span class="item-chevron">›</span>';
+    return html + '</div>';
+  }
+
+  function menuHeaderHtml(tableId, session, cu){
+    var callOpen = state.callRequests.filter(function(c){ return c.sessionId===session.id && c.status==='open'; })[0];
+    var count = cartCount(tableId);
+    var html = '';
+    html += '<div class="title-bar">注文メニュー</div>';
+    html += '<div class="info-row"><span class="table-chip">'+escapeHtml(tableLabel(tableId))+'</span>';
+    html += '<div class="info-actions">';
+    html += '<button class="btn btn-accent btn-sm" data-action="call-staff" data-table="'+tableId+'" '+(callOpen?'disabled':'')+'>'+(callOpen?'呼出中…':'店員呼出')+'</button>';
+    html += '<button class="btn btn-primary btn-sm btn-badge" data-action="open-status">注文状況'+(count?'<span class="badge">'+count+'</span>':'')+'</button>';
+    html += '</div></div>';
+
+    html += '<div class="genre-tabs">';
+    GENRES.forEach(function(g){
+      html += '<button class="genre-tab'+(cu.genre===g.id?' active':'')+'" data-action="set-genre" data-genre="'+g.id+'">'+g.label+'</button>';
+    });
+    html += '</div>';
+
+    var subs = SUBTABS[cu.genre];
+    if (subs){
+      html += '<div class="subtabs">';
+      subs.forEach(function(s){
+        html += '<button class="subtab" data-action="jump-sub" data-sub="'+s.id+'">'+s.label+'</button>';
+      });
+      html += '</div>';
+    }
+    return html;
+  }
+
+  function menuListHtml(cu){
+    var subs = SUBTABS[cu.genre];
+    var html = '<div>';
+    if (cu.genre === 'osusume'){
+      html += '<div class="subtitle-bar">本日のおすすめ</div>';
+      state.menu.filter(function(m){ return m.recommend; }).forEach(function(m){ html += itemRowHtml(m); });
+    } else {
+      subs.forEach(function(s){
+        html += '<div class="subtitle-bar" id="sec-'+cu.genre+'-'+s.id+'">'+s.label+'</div>';
+        state.menu.filter(function(m){ return m.genre===cu.genre && m.sub===s.id; }).forEach(function(m){ html += itemRowHtml(m); });
+      });
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function confirmedTotal(sessionId){
+    var total = 0;
+    state.orders.filter(function(o){ return o.sessionId === sessionId; }).forEach(function(o){
+      o.items.forEach(function(it){ total += it.unitPrice * it.qty; });
+    });
+    return total;
+  }
+
+  function orderTotalBarHtml(session){
+    return '<div class="order-total-bar"><span class="label">ご注文合計</span><span class="amount">'+yen(confirmedTotal(session.id))+'</span></div>';
+  }
+
+  function orderStatusHtml(tableId, session){
+    var lines = cartLines(tableId);
+    var html = '';
+    html += '<div class="back-bar"><button class="back-btn" data-action="close-status"><span class="chevron">‹</span>戻る</button><span>注文状況</span></div>';
+    html += '<div class="section-label">カート（未送信）</div>';
+    if (!lines.length){
+      html += '<div style="padding:6px 16px 12px; font-size:12.5px; color:var(--text-muted);">カートに商品がありません</div>';
+    } else {
+      lines.forEach(function(l){
+        html += '<div class="cart-line"><div class="cart-line-info"><div class="cart-line-name">'+escapeHtml(l.name)+(l.optionsSummary?'（'+escapeHtml(l.optionsSummary)+'）':'')+'</div>';
+        html += '<div class="cart-line-price">'+yen(l.unitPrice)+' ×'+l.qty+'</div></div>';
+        html += '<div class="stepper"><button data-action="cart-qty-dec" data-key="'+encodeURIComponent(l.key)+'">−</button><span class="qty">'+l.qty+'</span><button data-action="cart-qty-inc" data-key="'+encodeURIComponent(l.key)+'">＋</button></div></div>';
+      });
+    }
+    html += '<div class="cart-bar"><span class="cart-count">未送信 '+cartCount(tableId)+'点</span>';
+    html += '<button class="btn btn-primary" data-action="open-order-confirm" '+(lines.length?'':'disabled')+'>注文する</button></div>';
+
+    var history = state.orders.filter(function(o){ return o.sessionId === session.id; });
+    var historyLines = [];
+    history.forEach(function(o){
+      o.items.forEach(function(it){
+        historyLines.push({ name:it.name, optionsSummary:it.optionsSummary, qty:it.qty, createdAt:o.createdAt });
+      });
+    });
+    historyLines.sort(function(a,b){ return b.createdAt - a.createdAt; });
+
+    html += '<div class="section-label">これまでの注文（送信済み・新しい順）</div>';
+    if (!historyLines.length){
+      html += '<div style="padding:2px 16px 14px; font-size:12px; color:var(--text-muted);">まだ送信した注文はありません</div>';
+    } else {
+      html += '<div class="history">';
+      historyLines.forEach(function(line){
+        html += '<div class="history-item"><span>'+escapeHtml(line.name)+(line.optionsSummary?'（'+escapeHtml(line.optionsSummary)+'）':'')+' ×'+line.qty+'</span><span class="history-time">'+fmtClock(line.createdAt)+'</span></div>';
+      });
+      html += '</div>';
+    }
+    return html;
+  }
+
+  function detailModalHtml(item, cu){
+    var html = '<div class="modal-overlay sheet"><div class="modal-card">';
+    html += '<div class="item-thumb-lg thumb-'+item.hue+'">'+item.emoji+'</div>';
+    html += '<div style="margin-top:10px;"><div class="item-name" style="font-size:15px;">'+escapeHtml(item.name)+'</div>';
+    html += '<div class="item-price" style="font-size:13px;">'+yen(item.price)+'</div></div>';
+
+    (item.options || []).forEach(function(opt){
+      html += '<div class="option-group"><div class="option-label">'+escapeHtml(opt.label)+'</div>';
+      if (opt.type === 'choice'){
+        html += '<div class="choice-row">';
+        opt.choices.forEach(function(c){
+          html += '<button class="choice-btn'+(cu.detailOptions[opt.id]===c?' active':'')+'" data-action="set-choice" data-opt="'+opt.id+'" data-val="'+escapeHtml(c)+'">'+escapeHtml(c)+'</button>';
+        });
+        html += '</div>';
+      } else if (opt.type === 'toggle'){
+        html += '<div style="display:flex; align-items:center; gap:8px;"><span class="switch'+(cu.detailOptions[opt.id]?' on':'')+'" data-action="toggle-detail-opt" data-opt="'+opt.id+'"><i></i></span>'
+          + '<span style="font-size:12px; color:var(--text-muted);">'+(cu.detailOptions[opt.id]?'希望する':'希望しない')+'</span></div>';
+      } else if (opt.type === 'counter'){
+        html += '<div class="stepper"><button data-action="detail-counter-dec" data-opt="'+opt.id+'" data-min="'+opt.min+'">−</button>'
+          + '<span class="qty">'+(cu.detailOptions[opt.id]||0)+'</span>'
+          + '<button data-action="detail-counter-inc" data-opt="'+opt.id+'" data-max="'+opt.max+'">＋</button></div>';
+      }
+      html += '</div>';
+    });
+
+    html += '<div class="option-group"><div class="option-label">数量</div>';
+    html += '<div class="stepper"><button data-action="detail-qty-dec">−</button><span class="qty">'+cu.detailQty+'</span><button data-action="detail-qty-inc">＋</button></div></div>';
+
+    html += '<div style="display:flex; gap:8px; margin-top:12px;">';
+    html += '<button class="btn btn-outline" style="flex:1;" data-action="close-detail">キャンセル</button>';
+    html += '<button class="btn btn-primary" style="flex:2;" data-action="add-to-cart">カートに追加（'+yen(item.price*cu.detailQty)+'）</button>';
+    html += '</div></div></div>';
+    return html;
+  }
+
+  function confirmModalHtml(tableId){
+    var lines = cartLines(tableId);
+    var html = '<div class="modal-overlay center"><div class="modal-card">';
+    html += '<p style="font-weight:700; margin:0 0 8px;">この内容でご注文しますか？</p>';
+    html += '<div style="text-align:left; font-size:12px; color:var(--text-muted); margin-bottom:10px;">';
+    lines.forEach(function(l){
+      html += '<div>'+escapeHtml(l.name)+(l.optionsSummary?'（'+escapeHtml(l.optionsSummary)+'）':'')+' ×'+l.qty+'</div>';
+    });
+    html += '</div>';
+    html += '<div style="font-family:var(--font-mono); font-weight:700; margin-bottom:14px;">'+yen(cartTotal(tableId))+'</div>';
+    html += '<div style="display:flex; gap:8px;"><button class="btn btn-outline" style="flex:1;" data-action="cancel-order-confirm">いいえ</button>'
+      + '<button class="btn btn-primary" style="flex:1;" data-action="submit-customer-order">はい</button></div>';
+    html += '</div></div>';
+    return html;
+  }
+
+  function successModalHtml(){
+    return '<div class="modal-overlay center"><div class="modal-card">'
+      + '<div style="font-size:30px;">🍶</div>'
+      + '<p style="font-weight:700; margin:8px 0 4px;">ご注文を承りました</p>'
+      + '<p style="font-size:12px; color:var(--text-muted); margin:0 0 14px;">厨房に注文が送信されました。</p>'
+      + '<button class="btn btn-primary btn-block" data-action="close-success">閉じる</button></div></div>';
+  }
+
+  function renderCustomer(){
+    var cu = state.ui.customer;
+    var tableId = cu.tableId;
+    var session = activeSessionFor(tableId);
+    var root = document.getElementById('customerScreen');
+
+    var fixedTopHtml = '';
+    var scrollHtml = '';
+    var bottomHtml = '';
+
+    if (!session){
+      scrollHtml += '<div class="title-bar">注文メニュー</div>';
+      scrollHtml += '<div class="empty-state"><div class="glyph">🍶</div><p class="strong">ただいまご案内をお待ちください</p>'
+        + '<p>この卓はまだご案内前です。スタッフが伺いますので、少々お待ちください。</p></div>';
+    } else if (cu.screen === 'status'){
+      scrollHtml = orderStatusHtml(tableId, session);
+      bottomHtml = orderTotalBarHtml(session);
+    } else {
+      fixedTopHtml = menuHeaderHtml(tableId, session, cu);
+      scrollHtml = menuListHtml(cu);
+      bottomHtml = orderTotalBarHtml(session);
+    }
+
+    var modalHtml = '';
+    if (session){
+      if (cu.detailItem) modalHtml = detailModalHtml(menuById(cu.detailItem), cu);
+      else if (cu.confirmOpen) modalHtml = confirmModalHtml(tableId);
+      else if (cu.successOpen) modalHtml = successModalHtml();
+    }
+
+    root.innerHTML = tableSwitcherHtml(tableId) + fixedTopHtml
+      + '<div class="scroll-area">' + scrollHtml + '</div>'
+      + bottomHtml + modalHtml;
+  }
+
+  // ---- render: kitchen (food board / drink board / sold-out board) -----------------
+
+  var FOOD_STATES = [
+    { key:'received', title:'未対応', cls:'pending', actionLabel:'開始' },
+    { key:'in_progress', title:'調理中', cls:'progress', actionLabel:'調理完了' },
+    { key:'done', title:'調理完了', cls:'done', actionLabel:null }
+  ];
+  var DRINK_STATES = [
+    { key:'received', title:'未対応', cls:'pending', actionLabel:'対応済みにする' },
+    { key:'done', title:'対応済み', cls:'done', actionLabel:null }
+  ];
+
+  function kanbanHtml(boardKey){
+    var states = boardKey === 'food' ? FOOD_STATES : DRINK_STATES;
+    var genreFilter = boardKey === 'food' ? isFoodGenre : function(g){ return g === 'drink'; };
+    var kanbanClass = boardKey === 'food' ? 'kanban kanban-5' : 'kanban kanban-2';
+
+    var items = [];
+    state.orders.forEach(function(o){
+      o.items.forEach(function(it){
+        var genre = itemGenre(it.menuId);
+        if (genreFilter(genre)){
+          items.push({ orderId:o.id, itemId:it.id, tableId:o.tableId, createdAt:o.createdAt, name:it.name, optionsSummary:it.optionsSummary, qty:it.qty, status:it.status, genre:genre });
+        }
+      });
+    });
+
+    var byStatus = {};
+    states.forEach(function(s){ byStatus[s.key] = []; });
+    items.forEach(function(it){ if (byStatus[it.status]) byStatus[it.status].push(it); });
+
+    if (byStatus.received){
+      byStatus.received.sort(function(a,b){
+        var pa = (boardKey === 'food' && a.genre === 'ippin') ? 0 : 1;
+        var pb = (boardKey === 'food' && b.genre === 'ippin') ? 0 : 1;
+        if (pa !== pb) return pa - pb;
+        return a.createdAt - b.createdAt;
+      });
+    }
+    Object.keys(byStatus).forEach(function(key){
+      if (key !== 'received') byStatus[key].sort(function(a,b){ return a.createdAt - b.createdAt; });
+    });
+
+    var html = '<div class="'+kanbanClass+'">';
+    states.forEach(function(col){
+      var isWideCol = boardKey==='food' && (col.key==='received' || col.key==='in_progress');
+      var colWrapClass = 'kanban-col' + (isWideCol ? ' kanban-col-2' : '');
+      var outerStyle = isWideCol ? ' style="grid-column: span 2;"' : '';
+      html += '<div'+outerStyle+'><div class="kanban-col-head '+col.cls+'">'+col.title+'（'+byStatus[col.key].length+'）</div><div class="'+colWrapClass+'">';
+      if (byStatus[col.key].length === 0) html += '<div class="kanban-empty">なし</div>';
+      byStatus[col.key].forEach(function(it){
+        html += '<div class="order-card"><div class="order-card-head"><span class="order-card-table">'+escapeHtml(tableLabel(it.tableId))
+          + (boardKey==='food' && it.genre==='ippin' ? ' <span class="soldout-pill" style="background:var(--status-progress-bg); color:var(--status-progress);">一品</span>' : '')
+          + '</span><span class="order-card-time">'+fmtClock(it.createdAt)+'</span></div>';
+        html += '<div class="order-card-items">'+escapeHtml(it.name)+(it.optionsSummary?'（'+escapeHtml(it.optionsSummary)+'）':'')+' ×'+it.qty+'</div>';
+        if (col.key === 'received' && boardKey==='food' && it.genre==='ippin'){
+          html += '<div style="display:flex; gap:4px;">';
+          html += '<button class="btn btn-primary btn-sm" style="flex:1; padding:5px 4px;" data-action="advance-item" data-order="'+it.orderId+'" data-item="'+it.itemId+'">開始</button>';
+          html += '<button class="btn btn-outline btn-sm" style="flex:1; padding:5px 4px;" data-action="jump-item-done" data-order="'+it.orderId+'" data-item="'+it.itemId+'">完了</button>';
+          html += '</div>';
+        } else if (col.actionLabel){
+          html += '<button class="btn btn-primary btn-sm" data-action="advance-item" data-order="'+it.orderId+'" data-item="'+it.itemId+'">'+col.actionLabel+'</button>';
+        }
+        html += '</div>';
+      });
+      html += '</div></div>';
+    });
+    html += '</div>';
+    return html;
+  }
+
+  function soldoutPanelHtml(){
+    var search = state.ui.kitchen.soldoutSearch.trim();
+    var soldOutItems = state.menu.filter(function(m){ return m.soldOut; });
+
+    var html = '<div class="soldout-summary'+(soldOutItems.length?' active':'')+'">';
+    html += '<span class="soldout-summary-label">現在売り切れ中：'+soldOutItems.length+'品</span>';
+    if (soldOutItems.length){
+      html += '<div class="soldout-chips">';
+      soldOutItems.forEach(function(m){
+        html += '<button class="soldout-chip" data-action="request-toggle-soldout" data-menu="'+m.id+'">'+escapeHtml(m.name)+' ×</button>';
+      });
+      html += '</div>';
+    }
+    html += '</div>';
+
+    html += '<div class="soldout-search"><input type="text" placeholder="商品名で絞り込み" value="'+escapeHtml(state.ui.kitchen.soldoutSearch)+'" data-action-input="soldout-search"></div>';
+
+    var filtered = state.menu.filter(function(m){ return !search || m.name.indexOf(search) !== -1; });
+    var byGenre = {};
+    filtered.forEach(function(m){ (byGenre[m.genre]=byGenre[m.genre]||[]).push(m); });
+
+    html += '<div class="soldout-panel">';
+    var any = false;
+    GENRES.filter(function(g){ return g.id !== 'osusume'; }).forEach(function(g){
+      var list = byGenre[g.id];
+      if (!list || !list.length) return;
+      any = true;
+      var soldCount = list.filter(function(m){ return m.soldOut; }).length;
+      html += '<div class="section-label">'+escapeHtml(g.label)+'（'+list.length+'品中'+soldCount+'品 売り切れ）</div>';
+      list.forEach(function(m){
+        html += '<div class="soldout-row"><div class="soldout-row-info">';
+        html += '<div class="item-thumb item-thumb-sm thumb-'+m.hue+'">'+m.emoji+'</div>';
+        html += '<div><div class="item-name'+(m.soldOut?' soldout':'')+'">'+escapeHtml(m.name)+'</div><div class="item-price">'+yen(m.price)+'</div></div></div>';
+        html += '<span class="switch'+(m.soldOut?' on':'')+'" data-action="request-toggle-soldout" data-menu="'+m.id+'"><i></i></span></div>';
+      });
+    });
+    if (!any) html += '<div style="padding:14px 6px; font-size:12.5px; color:var(--text-muted);">該当する商品がありません</div>';
+    html += '</div>';
+    return html;
+  }
+
+  function renderKitchen(){
+    var ui = state.ui.kitchen;
+    var activeEl = document.activeElement;
+    var wasSearchFocused = !!(activeEl && activeEl.matches && activeEl.matches('#kitchenScreen [data-action-input="soldout-search"]'));
+    var caret = wasSearchFocused ? activeEl.selectionStart : null;
+
+    var titles = { food:'フードボード', drink:'ドリンクボード', soldout:'売り切れボード' };
+    var mock = '<div class="mock-control"><span class="tag">プレビュー操作</span>Realtime接続：'
+      + '<button class="btn btn-ghost btn-sm" data-action="toggle-kitchen-conn">'+(ui.connected?'切断してみる':'再接続する')+'</button></div>';
+
+    var fixedTop = '';
+    fixedTop += '<div class="screen-header"><span class="screen-title">'+titles[ui.tab]+'</span>';
+    fixedTop += '<span class="conn-dot'+(ui.connected?'':' off')+'"><i></i>'+(ui.connected?'リアルタイム接続中':'接続が切れています')+'</span></div>';
+
+    fixedTop += '<div class="tabs">';
+    fixedTop += '<button class="tab'+(ui.tab==='food'?' active':'')+'" data-action="kitchen-tab" data-tab="food">フードボード</button>';
+    fixedTop += '<button class="tab'+(ui.tab==='drink'?' active':'')+'" data-action="kitchen-tab" data-tab="drink">ドリンクボード</button>';
+    fixedTop += '<button class="tab'+(ui.tab==='soldout'?' active':'')+'" data-action="kitchen-tab" data-tab="soldout">売り切れボード</button>';
+    fixedTop += '</div>';
+
+    if (!ui.connected){
+      fixedTop += '<div class="banner warn">接続が切断されました。最新の注文が届いていない可能性があります。<button data-action="toggle-kitchen-conn">再接続する</button></div>';
+    } else if (ui.reconnectNotice){
+      fixedTop += '<div class="banner accent">再接続しました。最新の注文一覧を取得しました。</div>';
+    }
+
+    var html = '';
+    if (ui.tab === 'food') html += kanbanHtml('food');
+    else if (ui.tab === 'drink') html += kanbanHtml('drink');
+    else html += soldoutPanelHtml();
+
+    var pendingToggleHtml = '';
+    if (ui.pendingToggle){
+      var p = ui.pendingToggle;
+      pendingToggleHtml = '<div class="modal-overlay center"><div class="modal-card">'
+        + '<p style="font-weight:700; margin:0 0 14px;">'+escapeHtml(p.message)+'</p>'
+        + '<div style="display:flex; gap:8px;"><button class="btn btn-outline" style="flex:1;" data-action="cancel-pending-toggle">いいえ</button>'
+        + '<button class="btn btn-primary" style="flex:1;" data-action="confirm-pending-toggle">'+escapeHtml(p.confirmLabel)+'</button></div></div></div>';
+    }
+
+    document.getElementById('kitchenScreen').innerHTML = mock + fixedTop + '<div class="scroll-area">' + html + '</div>' + pendingToggleHtml;
+
+    if (wasSearchFocused){
+      var input = document.querySelector('#kitchenScreen [data-action-input="soldout-search"]');
+      if (input){ input.focus(); if (caret != null) input.setSelectionRange(caret, caret); }
+    }
+  }
+
+  // ---- render: register (floor map) ---------------------------------------
+
+  function floorSectionHtml(label, seats){
+    var html = '<div class="area-label">'+escapeHtml(label)+'</div><div class="floor-row">';
+    seats.forEach(function(t){
+      var session = activeSessionFor(t.id);
+      var callOpen = session ? state.callRequests.filter(function(c){ return c.sessionId===session.id && c.status==='open'; })[0] : null;
+      var cls = 'floor-box' + (session ? ' occupied' : ' vacant');
+      html += '<div class="'+cls+'" data-action="open-table" data-table="'+t.id+'">';
+      if (callOpen) html += '<span class="floor-box-call">呼出</span>';
+      html += '<div class="floor-box-label">'+escapeHtml(t.label)+'</div>';
+      if (session){
+        html += '<div class="floor-box-time">'+(session.partySize||1)+'名・'+elapsedMin(session.startedAt)+'分</div>';
+        html += '<div class="floor-box-amount">'+yen(confirmedTotal(session.id))+'</div>';
+      } else {
+        html += '<div class="floor-box-status">空席</div>';
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+    return html;
+  }
+
+  function tableDetailHtml(tableId){
+    var ru = state.ui.register;
+    var session = activeSessionFor(tableId);
+    var html = '<div class="modal-overlay center"><div class="modal-card wide">';
+    html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">';
+    html += '<div style="font-weight:700; font-size:16px;">'+escapeHtml(tableLabel(tableId))+'</div>';
+    html += '<button class="btn btn-ghost btn-sm" data-action="close-table-detail">閉じる</button></div>';
+
+    if (!session){
+      if (ru.startingTableId === tableId){
+        html += '<div class="option-group" style="border-top:none; padding-top:0;"><div class="option-label">人数</div>';
+        html += '<div class="stepper"><button data-action="party-size-dec">−</button><span class="qty">'+ru.partySizeDraft+'</span><button data-action="party-size-inc">＋</button></div></div>';
+        html += '<div style="display:flex; gap:8px; margin-top:10px;">';
+        html += '<button class="btn btn-outline" style="flex:1;" data-action="cancel-start-session">キャンセル</button>';
+        html += '<button class="btn btn-primary" style="flex:1;" data-action="confirm-start-session" data-table="'+tableId+'">入店する</button></div>';
+      } else {
+        html += '<p style="font-size:12.5px; color:var(--text-muted); margin:0 0 14px;">空席です。</p>';
+        html += '<button class="btn btn-primary btn-block" data-action="begin-start-session" data-table="'+tableId+'">入店</button>';
+      }
+      html += '</div></div>';
+      return html;
+    }
+
+    var callOpen = state.callRequests.filter(function(c){ return c.sessionId===session.id && c.status==='open'; })[0];
+    if (callOpen){
+      html += '<div class="banner accent" style="margin:0 0 10px;">呼び出し中<button data-action="resolve-call" data-call="'+callOpen.id+'">対応済みにする</button></div>';
+    }
+
+    html += '<div style="font-size:11.5px; color:var(--text-muted); margin-bottom:8px;">'+(session.partySize||1)+'名　・　ご来店 '+elapsedMin(session.startedAt)+'分経過　<span class="session-id">session #'+session.id+'</span></div>';
+
+    var orders = state.orders.filter(function(o){ return o.sessionId===session.id; });
+    var anyItem = false;
+    html += '<div style="max-height:170px; overflow-y:auto; border:1px solid var(--border); border-radius:10px; margin-bottom:10px;">';
+    orders.forEach(function(o){
+      o.items.forEach(function(it){
+        anyItem = true;
+        var genre = itemGenre(it.menuId);
+        var nextMap = isFoodGenre(genre) ? { received:'in_progress', in_progress:'done' } : { received:'done' };
+        html += '<div class="cart-line"><div class="cart-line-info"><div class="cart-line-name">'+escapeHtml(it.name)+(it.optionsSummary?'（'+escapeHtml(it.optionsSummary)+'）':'')+' ×'+it.qty+'</div>';
+        html += '<div class="cart-line-price">'+yen(it.unitPrice*it.qty)+'　'+statusLabel(genre, it.status)+'</div></div>';
+        html += '<div style="display:flex; gap:4px; flex-shrink:0;">';
+        if (nextMap[it.status]) html += '<button class="btn btn-outline btn-sm" data-action="request-advance-item" data-order="'+o.id+'" data-item="'+it.id+'">進める</button>';
+        html += '<button class="btn btn-ghost btn-sm" data-action="remove-item" data-order="'+o.id+'" data-item="'+it.id+'">削除</button>';
+        html += '</div></div>';
+      });
+    });
+    if (!anyItem) html += '<div style="padding:10px 12px; font-size:12px; color:var(--text-muted);">まだ注文はありません</div>';
+    html += '</div>';
+
+    html += '<div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:10px;"><span style="font-size:12px; color:var(--text-muted);">合計</span>'
+      + '<span style="font-family:var(--font-mono); font-weight:700; font-size:16px;">'+yen(confirmedTotal(session.id))+'</span></div>';
+
+    html += '<button class="btn btn-outline btn-block" style="margin-bottom:8px;" data-action="toggle-add-menu">'+(ru.addMenuOpen?'品目の追加を閉じる':'＋ 品目を追加')+'</button>';
+
+    if (ru.addMenuOpen){
+      html += '<div style="max-height:150px; overflow-y:auto; border:1px solid var(--border); border-radius:10px; margin-bottom:10px;">';
+      var byGenre = {};
+      state.menu.forEach(function(m){ (byGenre[m.genre]=byGenre[m.genre]||[]).push(m); });
+      GENRES.filter(function(g){ return g.id !== 'osusume'; }).forEach(function(g){
+        var list = byGenre[g.id];
+        if (!list || !list.length) return;
+        html += '<div class="section-label">'+escapeHtml(g.label)+'</div>';
+        list.forEach(function(m){
+          html += '<div class="soldout-row"><span'+(m.soldOut?' style="color:var(--soldout); text-decoration:line-through;"':'')+'>'+escapeHtml(m.name)+' '+yen(m.price)+'</span>';
+          html += '<button class="btn btn-primary btn-sm" data-action="add-staff-item" data-table="'+tableId+'" data-menu="'+m.id+'" '+(m.soldOut?'disabled':'')+'>＋</button></div>';
+        });
+      });
+      html += '</div>';
+    }
+
+    html += '<button class="btn btn-danger btn-block" data-action="request-close" data-table="'+tableId+'">会計（退店）</button>';
+
+    html += '</div></div>';
+    return html;
+  }
+
+  function pendingActionModalHtml(){
+    var p = state.ui.register.pendingAction;
+    if (!p) return '';
+    var html = '<div class="modal-overlay center"><div class="modal-card">';
+    html += '<p style="font-weight:700; margin:0 0 14px; white-space:pre-line;">'+escapeHtml(p.message)+'</p>';
+    html += '<div style="display:flex; gap:8px;"><button class="btn btn-outline" style="flex:1;" data-action="cancel-pending-action">いいえ</button>';
+    html += '<button class="btn btn-primary" style="flex:1;" data-action="confirm-pending-action">'+escapeHtml(p.confirmLabel)+'</button></div>';
+    html += '</div></div>';
+    return html;
+  }
+
+  function renderRegister(){
+    var html = '';
+    html += '<div class="screen-header"><span class="screen-title">卓マップ</span><span class="device-sub">全'+state.tables.length+'卓</span></div>';
+
+    var tableSeats = state.tables.filter(function(t){ return /^T/.test(t.label); });
+    var counterSeats = state.tables.filter(function(t){ return /^C/.test(t.label); });
+    html += floorSectionHtml('テーブル', tableSeats);
+    html += floorSectionHtml('カウンター', counterSeats);
+
+    var modalHtml = state.ui.register.openTableId ? tableDetailHtml(state.ui.register.openTableId) : '';
+    modalHtml += pendingActionModalHtml();
+
+    document.getElementById('registerScreen').innerHTML = '<div class="scroll-area">' + html + '</div>' + modalHtml;
+  }
+
+  function render(){ renderCustomer(); renderKitchen(); renderRegister(); }
+
+  function tickClock(){
+    var el = document.getElementById('clock');
+    if (el){
+      var d = new Date();
+      function p(n){ return (n<10?'0':'')+n; }
+      el.textContent = p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());
+    }
+  }
+
+  // ---- event delegation --------------------------------------------------
+
+  document.addEventListener('click', function(e){
+    var el = e.target.closest('[data-action]');
+    if (!el) return;
+    var action = el.getAttribute('data-action');
+    switch(action){
+      case 'call-staff': createCallRequest(el.getAttribute('data-table')); break;
+      case 'open-status': openOrderStatus(); break;
+      case 'close-status': closeOrderStatus(); break;
+      case 'set-genre': setGenre(el.getAttribute('data-genre')); break;
+      case 'jump-sub': jumpToSub(el.getAttribute('data-sub')); break;
+      case 'open-detail': openDetail(el.getAttribute('data-menu')); break;
+      case 'close-detail': closeDetail(); break;
+      case 'set-choice': setDetailChoice(el.getAttribute('data-opt'), el.getAttribute('data-val')); break;
+      case 'toggle-detail-opt': toggleDetailToggle(el.getAttribute('data-opt')); break;
+      case 'detail-counter-inc': changeDetailCounter(el.getAttribute('data-opt'), 1, 0, parseInt(el.getAttribute('data-max'),10)); break;
+      case 'detail-counter-dec': changeDetailCounter(el.getAttribute('data-opt'), -1, parseInt(el.getAttribute('data-min'),10), null); break;
+      case 'detail-qty-inc': changeDetailQty(1); break;
+      case 'detail-qty-dec': changeDetailQty(-1); break;
+      case 'add-to-cart': confirmAddDetailToCart(); break;
+      case 'cart-qty-inc': changeCartLineQty(state.ui.customer.tableId, decodeURIComponent(el.getAttribute('data-key')), 1); break;
+      case 'cart-qty-dec': changeCartLineQty(state.ui.customer.tableId, decodeURIComponent(el.getAttribute('data-key')), -1); break;
+      case 'open-order-confirm': openOrderConfirm(); break;
+      case 'cancel-order-confirm': cancelOrderConfirm(); break;
+      case 'submit-customer-order': submitCustomerOrder(); break;
+      case 'close-success': closeSuccess(); break;
+      case 'toggle-kitchen-conn': toggleKitchenConnection(); break;
+      case 'kitchen-tab': setKitchenTab(el.getAttribute('data-tab')); break;
+      case 'advance-item': advanceItemStatus(el.getAttribute('data-order'), el.getAttribute('data-item')); break;
+      case 'jump-item-done': jumpItemToDone(el.getAttribute('data-order'), el.getAttribute('data-item')); break;
+      case 'request-toggle-soldout': requestToggleSoldOut(el.getAttribute('data-menu')); break;
+      case 'cancel-pending-toggle': cancelPendingToggle(); break;
+      case 'confirm-pending-toggle': confirmPendingToggle(); break;
+      case 'begin-start-session': beginStartSession(el.getAttribute('data-table')); break;
+      case 'cancel-start-session': cancelStartSession(); break;
+      case 'confirm-start-session': confirmStartSession(el.getAttribute('data-table')); break;
+      case 'party-size-inc': changeStartPartySize(1); break;
+      case 'party-size-dec': changeStartPartySize(-1); break;
+      case 'request-close': requestCloseSession(el.getAttribute('data-table')); break;
+      case 'resolve-call': resolveCallRequest(el.getAttribute('data-call')); break;
+      case 'open-table': openTableDetail(el.getAttribute('data-table')); break;
+      case 'close-table-detail': closeTableDetail(); break;
+      case 'toggle-add-menu': toggleAddMenu(); break;
+      case 'add-staff-item': requestAddStaffItem(el.getAttribute('data-table'), el.getAttribute('data-menu')); break;
+      case 'remove-item': requestRemoveItem(el.getAttribute('data-order'), el.getAttribute('data-item')); break;
+      case 'request-advance-item': requestAdvanceFromRegister(el.getAttribute('data-order'), el.getAttribute('data-item')); break;
+      case 'cancel-pending-action': cancelPendingAction(); break;
+      case 'confirm-pending-action': confirmPendingAction(); break;
+    }
+  });
+  document.addEventListener('change', function(e){
+    if (e.target.matches('[data-action="select-table"]')) setCustomerTable(e.target.value);
+  });
+  document.addEventListener('input', function(e){
+    if (e.target.matches('[data-action-input="soldout-search"]')) setSoldoutSearch(e.target.value);
+  });
+
+  render();
+  tickClock();
+  setInterval(tickClock, 1000);
+  setInterval(render, 20000);
+})();
+</script>
