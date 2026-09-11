@@ -1,15 +1,25 @@
+import { notFound } from "next/navigation";
+import type { DeviceRole } from "@/lib/device/useDeviceIdentity";
+import SetupForm from "./SetupForm";
+
 type SetupPageProps = {
   params: Promise<{ role: string }>;
 };
 
-// 厨房/レジタブレットの初回デバイスプロビジョニング画面のプレースホルダー。
-// セットアップコード入力・匿名サインインの実装は後続タスクで行う。
+function isDeviceRole(value: string): value is DeviceRole {
+  return value === "kitchen" || value === "register";
+}
+
+// 厨房/レジタブレットの初回デバイスプロビジョニング画面。
+// ルートパラメータの妥当性検証（kitchen/register以外は404）のみを担い、
+// 実際のセットアップコード入力・匿名サインイン・devices登録のフローは
+// SetupForm（クライアントコンポーネント）に委譲する。
 export default async function SetupPage({ params }: SetupPageProps) {
   const { role } = await params;
 
-  return (
-    <main>
-      <h1>デバイスセットアップ ({role})</h1>
-    </main>
-  );
+  if (!isDeviceRole(role)) {
+    notFound();
+  }
+
+  return <SetupForm role={role} />;
 }

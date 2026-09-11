@@ -303,7 +303,26 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      assert_device_role: {
+        Args: { allowed_roles: string[] }
+        Returns: undefined
+      }
+      custom_access_token_hook: { Args: { event: Json }; Returns: Json }
+      provision_device: {
+        Args: { p_role: string; p_setup_code: string; p_store_id: string }
+        Returns: {
+          auth_user_id: string
+          id: string
+          role: string
+          store_id: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "devices"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
     }
     Enums: {
       [_ in never]: never

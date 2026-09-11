@@ -52,8 +52,17 @@ default_pool_size = 20
 # Maximum number of client connections allowed.
 max_client_conn = 100
 
-# [db.vault]
-# secret_key = "env(SECRET_VALUE)"
+# table-order-kitchen: 厨房/レジタブレットの初回プロビジョニング（/setup/[role],
+# 0007_provision_device.sql）で使うセットアップコードをSupabase Vaultへ登録する。
+# `env(DEVICE_SETUP_CODE)`はプロジェクトルートの`.env.local`（Next.js標準のローカル用
+# dotenvファイルをそのまま利用。gitignore済み）からDEVICE_SETUP_CODEを読み取り、
+# `supabase start`/`supabase db reset`のたびにVaultシークレット`device_setup_code`
+# （小文字化される。supabase/cli#3242の既知の挙動）としてupsertする（2.117.0で実機確認済み）。
+# 本番/クラウド環境ではこのconfig.tomlのenv()置換は適用されないため、初回セットアップ時に
+# 一度だけ手動で`select vault.create_secret(...)`を実行する運用作業が別途必要
+# （詳細はマイグレーションファイル冒頭のコメント参照）。
+[db.vault]
+device_setup_code = "env(DEVICE_SETUP_CODE)"
 
 [db.migrations]
 # If disabled, migrations will be skipped during a db push or reset.

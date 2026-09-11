@@ -39,7 +39,7 @@
   - _Requirements: 8.2, 8.3_
   - _Depends: 2.1_
 
-- [ ] 2.3 DeviceIdentityProviderと初回セットアップ画面
+- [x] 2.3 DeviceIdentityProviderと初回セットアップ画面
   - `ensureDeviceSession`/`provisionDevice`/`getCurrentDevice`を実装し、`/setup/[role]`画面でセットアップコード入力→匿名サインイン→`devices`登録を行う
   - 観測可能な完了条件: セットアップコード入力後、タブレットのローカルストレージに永続化されたセッションで再訪時に認証UIが表示されない
   - _Requirements: 8.2, 8.3_
@@ -280,3 +280,4 @@
 - 開発環境ではDockerがWSL2「Ubuntu」ディストリビューション内でのみ動作する（Windows側にDocker Desktopなし）。Supabase CLIは同ディストリビューション内`~/bin/supabase`にインストール済みでログインシェルのPATHに登録済み。`supabase`系コマンドは必ず `wsl -d Ubuntu -e bash -lc "cd '/mnt/c/Users/shunsuke-iida/Documents/VSCode/Restaurant Order System' && supabase <args>"` 経由で実行する。日常操作は`package.json`の`db:start`/`db:stop`/`db:reset`/`db:types`スクリプト（1.2で追加済み）がこの経路をラップしているのでそちらを使う。
 - Supabase CLI 2.117.0はローカル起動時にキーを「Publishable」「Secret」として表示するが、内部的には引き続きレガシーのJWT形式`anon`/`service_role`キーと同等に扱われ、`anon`ロール経路はPublishable keyで正しく解決されることを1.2のレビューで実機検証済み。ただし`authenticated`ロール＋`device_role`カスタムクレームの経路（Custom Access Token Hook, DeviceIdentityProvider）は未検証であり、`supabase/config.toml`は現在`auth.enable_anonymous_sign_ins = false`（デフォルト）になっている。**タスク2.1（Custom Access Token Hook）着手時に、匿名サインインを有効化した上でdevice_roleクレームがセッションJWTに正しく含まれることを実機で確認すること。**
 - 1.3でPostgres連携の統合テスト（`pg`クライアント）を追加した結果、`npm test`はローカルSupabaseスタック（`npm run db:start`）が起動していないと失敗する（ECONNREFUSED、フェイルファストで原因は明確）。本プロジェクトはPostgres RPCが中心のためこれは許容し、各タスクの実装者は作業前に`npm run db:start`を実行すること。RPCタスク（3.x/4.x）でテスト本数が増えてきたら、`test:unit`（DB不要・高速）と`test:integration`（DB必須）へのスクリプト分割を検討する。
+- 2.3で判明：`vitest.config.mts`は元々`.env.local`を`process.env`へロードしていなかった（Vite/Vitestの既定動作では`.env.local`は自動ロードされない）。修正済み（`loadEnv`をマージ、シェル/CI環境変数が優先されるよう順序を維持）。この修正前は、統合テストが`process.env.X ?? "<ハードコードされたfallback値>"`という書き方をしていると、実際には常にfallback値でテストしていた（`.env.local`の値と偶然一致していただけ）。**今後、環境変数に依存する新しいテストを書く際は、ハードコードされたfallback値を使わず、値が未設定なら`beforeAll`等で明確なエラーを投げてfail-fastすること**（シークレット的な値の場合は特に、fallbackがgit管理ファイルへの平文漏洩の抜け道になる）。
