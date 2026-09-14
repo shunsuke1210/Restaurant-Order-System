@@ -63,7 +63,7 @@
   - _Requirements: 2.1, 2.2, 2.3_
   - _Depends: 3.1_
 
-- [ ] 3.4 CustomerOrderingGatewayのTypeScriptラッパー
+- [x] 3.4 CustomerOrderingGatewayのTypeScriptラッパー
   - `getOrderingContext`/`submitOrder`/`createCallRequest`を型付きの`Result<T,E>`として公開するラッパーを実装する
   - 観測可能な完了条件: 各RPCのエラーコードがユニオン型として型チェックを通過し、呼び出し側で網羅的なswitchができる
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 1.10, 1.12, 2.1, 2.2, 2.3, 7.2_
@@ -288,3 +288,4 @@
 - Supabase CLI 2.117.0はローカル起動時にキーを「Publishable」「Secret」として表示するが、内部的には引き続きレガシーのJWT形式`anon`/`service_role`キーと同等に扱われ、`anon`ロール経路はPublishable keyで正しく解決されることを1.2のレビューで実機検証済み。ただし`authenticated`ロール＋`device_role`カスタムクレームの経路（Custom Access Token Hook, DeviceIdentityProvider）は未検証であり、`supabase/config.toml`は現在`auth.enable_anonymous_sign_ins = false`（デフォルト）になっている。**タスク2.1（Custom Access Token Hook）着手時に、匿名サインインを有効化した上でdevice_roleクレームがセッションJWTに正しく含まれることを実機で確認すること。**
 - 1.3でPostgres連携の統合テスト（`pg`クライアント）を追加した結果、`npm test`はローカルSupabaseスタック（`npm run db:start`）が起動していないと失敗する（ECONNREFUSED、フェイルファストで原因は明確）。本プロジェクトはPostgres RPCが中心のためこれは許容し、各タスクの実装者は作業前に`npm run db:start`を実行すること。RPCタスク（3.x/4.x）でテスト本数が増えてきたら、`test:unit`（DB不要・高速）と`test:integration`（DB必須）へのスクリプト分割を検討する。
 - 2.3で判明：`vitest.config.mts`は元々`.env.local`を`process.env`へロードしていなかった（Vite/Vitestの既定動作では`.env.local`は自動ロードされない）。修正済み（`loadEnv`をマージ、シェル/CI環境変数が優先されるよう順序を維持）。この修正前は、統合テストが`process.env.X ?? "<ハードコードされたfallback値>"`という書き方をしていると、実際には常にfallback値でテストしていた（`.env.local`の値と偶然一致していただけ）。**今後、環境変数に依存する新しいテストを書く際は、ハードコードされたfallback値を使わず、値が未設定なら`beforeAll`等で明確なエラーを投げてfail-fastすること**（シークレット的な値の場合は特に、fallbackがgit管理ファイルへの平文漏洩の抜け道になる）。
+- `src/lib/gateways/customerOrderingGateway.ts`（3.4）の各メソッドは、ドキュメント化されたエラーコード以外の予期しないエラー（ネットワーク断等）を`Result`に含めず例外としてthrowする（`src/lib/result.ts`/`useDeviceIdentity.ts`から続く既存の規約）。**そのため6.x（CustomerOrderApp UI）でこのゲートウェイを呼び出す際は、必ずtry/catchで例外を捕捉すること**（Reactのエラーバウンダリはイベントハンドラ内の非同期例外を自動捕捉しないため、素通りすると画面に何も表示されないまま失敗する）。
