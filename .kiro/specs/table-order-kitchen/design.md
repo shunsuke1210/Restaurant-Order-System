@@ -407,7 +407,7 @@ interface StaffOperationsGateway {
   removeOrderItem(input: RemoveOrderItemInput): Promise<Result<{ orderItemId: string }, RemoveOrderItemError>>;
   updateOrderItemStatus(input: UpdateOrderItemStatusInput): Promise<Result<OrderItemSummary, UpdateOrderItemStatusError>>;
   setSoldOut(input: SetSoldOutInput): Promise<Result<MenuItem, MenuItemError>>;
-  resolveCallRequest(input: ResolveCallRequestInput): Promise<Result<CallRequest, CallRequestError>>;
+  resolveCallRequest(input: ResolveCallRequestInput): Promise<Result<CallRequest, ResolveCallRequestError>>;
   listKitchenFeed(input: ListFeedInput): Promise<Result<ReadonlyArray<OrderItemSummary & { tableId: string; tableLabel: string; genre: MenuItemGenre }>, never>>;
   listRegisterFeed(input: ListFeedInput): Promise<Result<ReadonlyArray<TableBillingSummary>, never>>;
 }
@@ -494,6 +494,8 @@ type MenuItemError = { code: "ITEM_NOT_FOUND" } | { code: "FORBIDDEN" };
 interface ResolveCallRequestInput {
   callRequestId: string;
 }
+
+type ResolveCallRequestError = { code: "FORBIDDEN" } | { code: "CALL_REQUEST_NOT_FOUND" };
 
 interface ListFeedInput {
   storeId: string;

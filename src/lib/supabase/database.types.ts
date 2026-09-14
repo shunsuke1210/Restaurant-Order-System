@@ -362,6 +362,14 @@ export type Database = {
         }
       }
       remove_order_item: { Args: { p_order_item_id: string }; Returns: Json }
+      resolve_call_request: {
+        Args: { p_call_request_id: string }
+        Returns: Json
+      }
+      set_sold_out: {
+        Args: { p_menu_item_id: string; p_sold_out: boolean }
+        Returns: Json
+      }
       start_session: {
         Args: { p_party_size: number; p_table_id: string }
         Returns: Json

@@ -99,7 +99,7 @@
   - _Requirements: 5.7, 6.2, 6.3, 6.4, 6.5, 6.6, 6.10_
   - _Depends: 4.1_
 
-- [ ] 4.4 set_sold_out / resolve_call_request RPCの実装
+- [x] 4.4 set_sold_out / resolve_call_request RPCの実装
   - 品目の売り切れ状態を切り替える（既存注文の内容・状態を変更しない）RPCと、呼び出しを対応済みにするRPCを実装する
   - 観測可能な完了条件: 品目を売り切れ登録しても、登録前に作成された`order_items`の行数・`status`が変化しない
   - _Requirements: 2.4, 7.1, 7.3, 7.4_

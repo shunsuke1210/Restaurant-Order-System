@@ -991,3 +991,360 @@ revoke execute on function public.update_order_item_status(uuid, text)
   from public, anon, authenticated;
 
 grant execute on function public.update_order_item_status(uuid, text) to authenticated;
+
+-- =========================================================================
+-- タスク4.4: set_sold_out / resolve_call_request RPC
+-- =========================================================================
+-- Requirements: 2.4, 7.1, 7.3, 7.4
+-- Design: design.mdの StaffOperationsGateway コンポーネント（Responsibilities &
+--   Constraints「`addOrderItem` / `removeOrderItem` / `updateOrderItemStatus`
+--   （レジ起点）/ `setSoldOut` / `closeSession` の実行前確認...はUI層
+--   （RegisterConsole / KitchenBoard）の責務とし、本Gatewayは確認済みの操作の
+--   みを受け取る」「`setSoldOut`は`order_items`が既に生成済みの注文の内容・
+--   ステータスを変更しない（要件7.4）」、Service Interface: setSoldOut /
+--   SetSoldOutInput / MenuItem / MenuItemError / resolveCallRequest /
+--   ResolveCallRequestInput）、Requirements Traceability「7.1-7.4 |
+--   売り切れ登録・解除・既存注文への非影響 | StaffOperationsGateway |
+--   setSoldOut」「2.1-2.4 | 呼び出しボタン送信・重複防止・レジへの通知表示・
+--   対応済み処理 | CustomerOrderingGateway, StaffOperationsGateway |
+--   createCallRequest, resolveCallRequest, listRegisterFeed」、
+--   Components and Interfaces「KitchenBoard (UI) | Req Coverage: 6.1-6.10,
+--   7.1, 7.3-7.4」「RegisterConsole (UI) | Req Coverage: 2.4, 3.1-3.5,
+--   5.1-5.7」を参照。
+--
+-- スコープ: set_sold_out / resolve_call_requestの2関数のみ。
+--   list_kitchen_feed / list_register_feed（4.5）、StaffOperationsGatewayの
+--   TypeScriptラッパー（4.6）、いかなるUIも本タスクの対象外（4.1冒頭コメントの
+--   通り、それぞれ4.5/4.6で別途実装される想定）。
+--
+-- =========================================================================
+-- 設計判断14: set_sold_out — device_role = `kitchen`限定
+--   （`register`は含めない）
+-- =========================================================================
+-- 4.1（設計判断1）・4.2（設計判断6）・4.3（設計判断11）が確立した判断基準
+-- 「StaffOperationsGateway全体を許可するという最も粗い境界を、各メソッドが
+-- そのまま両方に開放してよいわけではなく、実際にどちらのロールに絞るかは
+-- 各メソッドが紐づく要件の業務文脈で決まる」を、setSoldOutにも同様に適用する。
+--
+-- 根拠(a) 要件文書: 要件7（厨房での売り切れ登録）のAcceptance Criteria
+-- 7.1「厨房スタッフが品目を売り切れとして登録する操作を行う」・7.3「厨房
+-- スタッフが品目の売り切れ状態を解除する操作を行う」はいずれも主語が明確に
+-- 「厨房スタッフ」であり、要件7のObjective自体も「厨房スタッフとして、
+-- 食材が切れた品目をすぐに売り切れとして登録したい」である。レジスタッフの
+-- 関与は要件7には一切登場しない（7.2は客側`get_ordering_context`/`submit_order`
+-- の責務、7.4はDB不変条件であり、いずれも本RPCの主体を規定しない）。
+--
+-- 根拠(b) design.md: Components and InterfacesテーブルでKitchenBoard (UI)の
+-- Req Coverageは「6.1-6.10, 7.1, 7.3-7.4」と要件7系列を明示的に含むが、
+-- RegisterConsole (UI)のReq Coverageは「2.4, 3.1-3.5, 5.1-5.7」であり要件7を
+-- 一切含まない。KitchenBoardのUI説明も「売り切れの登録・解除操作は実行前に
+-- 確認ダイアログを表示し、確認後にのみ`setSoldOut`を呼び出す（要件7.1, 7.3）」
+-- と明記する一方、RegisterConsoleのUI説明には`setSoldOut`への言及が一切ない。
+--
+-- 以上、要件文書のEARS主語とdesign.mdのUI別Req Coverageの両方が一致して
+-- 「厨房限定」を指しており（4.1/4.2のように両者が矛盾するケースではない）、
+-- `perform assert_device_role(array['kitchen']);`のみを許可する
+-- （`array['kitchen','register']`は採用しない）。
+--
+-- =========================================================================
+-- 設計判断15: resolve_call_request — device_role = `register`限定
+--   （`kitchen`は含めない）
+-- =========================================================================
+-- 根拠(a) 要件文書: 要件2.4「レジスタッフが呼び出しに対応済みとして操作する」の
+-- 主語は明確に「レジスタッフ」である。要件2の他のAC（2.1-2.3）は客側の操作
+-- （呼び出しボタン表示・送信・重複防止）であり、レジスタッフの操作として
+-- 明記されるのは2.4のみである。
+--
+-- 根拠(b) design.md: Components and InterfacesテーブルでRegisterConsole (UI)の
+-- Req Coverageは「2.4, 3.1-3.5, 5.1-5.7」と2.4を明示的に含むが、KitchenBoard
+-- (UI)のReq Coverageは「6.1-6.10, 7.1, 7.3-7.4」であり2.4を一切含まない。
+-- Requirements Traceability表の行「2.1-2.4 | ... | CustomerOrderingGateway,
+-- StaffOperationsGateway | createCallRequest, resolveCallRequest,
+-- listRegisterFeed（hasOpenCallRequest）」もInterfacesにlistRegisterFeed
+-- （レジ専用機能、4.5）を並置しており、この行全体がレジ側の関心事として
+-- 記述されていることを裏付ける。
+--
+-- 以上から`perform assert_device_role(array['register']);`のみを許可する。
+--
+-- =========================================================================
+-- 設計判断16: set_sold_outのエラーコード — ITEM_NOT_FOUNDに新規'P0405'を割り当てる
+-- =========================================================================
+-- 「実在しないmenuItemId」は、design.mdのMenuItemErrorが明示的に定義する
+-- { code: "ITEM_NOT_FOUND" }に対応する。本プロジェクトはエンティティ種別ごとに
+-- NOT_FOUND系コードを使い分ける方針を既に2回確立している
+-- （TABLE_NOT_FOUND='P0404' [0003 get_ordering_context / 0004 start_session] と
+-- ORDER_ITEM_NOT_FOUND='P0444' [0004 remove_order_item / update_order_item_status]
+-- は、どちらも「〜が実在しない」という類似の意味でありながら対象エンティティが
+-- 異なるため、意図的に異なるコードとして採番されている）。ITEM_NOT_FOUND
+-- （対象: menu_items）も卓・注文明細のいずれとも異なるエンティティであるため、
+-- この前例に従い既存コードを再利用せず新規に割り当てる。
+--
+-- 既存の採番済みコード（P0400/P0401/P0403/P0404/P0409/P0410/P0412/P0422/
+-- P0423/P0429/P0444。本ファイル・0003・0006・0007の全コメントを実装直前に
+-- 確認済み）のいずれとも衝突しない'P0405'を選ぶ。TABLE_NOT_FOUND（'P0404'）の
+-- 次のサブコードであり、「卓」（'P0404'）に続く「品目」という、どちらも
+-- get_ordering_context/submit_orderが再検証する対象エンティティのNOT_FOUND系
+-- であることを想起しやすい採番とした。
+--
+-- 実装方式: menu_itemsにはtable_sessionsのようなstatus列がないため、
+-- close_session/update_party_size（4.1）と同じ「UPDATE ... WHERE id = $1
+-- RETURNING * into ...; if not found then raise exception」という単一文の
+-- パターンをそのまま踏襲する。存在確認と更新を1つのUPDATE文に統合することで、
+-- 事前のSELECT一致確認（start_sessionのTABLE_NOT_FOUND判定パターン）を
+-- 追加で持ち込む必要がない（Simplification原則）。この単一UPDATE文は
+-- menu_itemsの`sold_out`列のみを変更対象とし、order_itemsには一切触れない
+-- ため、タスクの観測可能な完了条件（登録前に作成されたorder_itemsの行数・
+-- statusが変化しない）はSQL文の構造自体によって自明に満たされる。
+--
+-- =========================================================================
+-- 設計判断17（CONCERN。レビューでの確認・design.md修正を要する）:
+--   resolveCallRequestのエラー型 — design.mdのCallRequestError
+--   （{code:"SESSION_NOT_ACTIVE"}|{code:"CALL_ALREADY_OPEN"}）をそのまま
+--   再利用せず、実際に必要な{FORBIDDEN, CALL_REQUEST_NOT_FOUND}を実装する
+-- =========================================================================
+-- design.mdのService Interfaceは
+--   `resolveCallRequest(input: ResolveCallRequestInput):
+--     Promise<Result<CallRequest, CallRequestError>>;`
+-- と、3.3のcreateCallRequestが定義するCallRequestError型をそのまま再利用する
+-- 型注釈になっている。しかし以下の3点から、これはdesign.md作成時の
+-- コピー&ペースト起因のgapであり、resolveCallRequestという操作の実際の
+-- エラー面（error surface）を意図して設計されたものではないと判断した。
+--
+-- (1) ResolveCallRequestInputは`{ callRequestId: string }`のみを持ち、
+--     sessionIdを一切含まない。SESSION_NOT_ACTIVEは「対象セッションが
+--     activeであること」を検証できて初めて意味を持つエラーだが、本関数の
+--     入力にはそもそも検証対象となるsessionIdが存在しない
+--     （callRequestIdからsession_idをJOINで辿ることは可能だが、design.mdの
+--     PreconditionsにもService Interfaceにも、resolveCallRequestが
+--     セッションのactive/closed状態を検証すべきだという記述は一切ない）。
+--
+-- (2) CALL_ALREADY_OPENは、design.md自身が明記する通り「呼び出し要求は
+--     同一セッションに未対応（open）のものがある場合、新規作成しない
+--     （要件2.3）」というcreateCallRequest（新規作成操作）専用の重複防止
+--     エラーである。resolveCallRequestは既存の呼び出しを対応済みに変える
+--     操作であり、「新規作成しようとしたら既に別のopenな呼び出しがあった」
+--     という状況そのものが発生し得ない（本関数は新規作成を一切行わない）。
+--
+-- (3) design.mdの他の全StaffOperationsGatewayエラー型
+--     （StartSessionError, CloseSessionError, UpdatePartySizeError,
+--     AddOrderItemError, RemoveOrderItemError, UpdateOrderItemStatusError,
+--     MenuItemError）は例外なく`{ code: "FORBIDDEN" }`を含む
+--     （Preconditions「全メソッドは呼び出し元JWTに有効なdevice_roleクレーム
+--     があることを要求する。ない場合はFORBIDDENを返す」という全メソッド
+--     共通の契約と整合する）。CallRequestErrorだけがFORBIDDENを持たない
+--     唯一のStaffOperationsGatewayメソッド用エラー型になってしまうのは、
+--     このメソッドがcreateCallRequest（CustomerOrderingGateway、anon経路で
+--     呼ばれ、device_role検証を経ない）の型をそのまま流用したことの帰結
+--     であると考えるのが最も自然である。
+--
+-- 結論・対応: 本関数はdesign.mdの文言通りのCallRequestErrorを型として
+-- 実装するのではなく、resolveCallRequestという操作が実際に必要とする
+-- エラー面を実装する。すなわち:
+--   - FORBIDDEN: device_roleクレームが不正/欠如（assert_device_roleが
+--     送出する既存の'P0403'をそのまま利用。他の全StaffOperationsGateway
+--     メソッドと同一の意味・同一のコード）
+--   - CALL_REQUEST_NOT_FOUND: 指定されたcallRequestIdが実在しない場合、
+--     および実在するが既に'resolved'の場合の両方（設計判断18で詳述）。
+--     新規に'P0445'を割り当てる。
+-- 本タスクの実装者はレビュアーではないため、design.md自体の修正は行わず、
+-- 実装（本コメント）でこの判断根拠を明示するに留める。design.mdの
+-- resolveCallRequestのエラー型注釈（CallRequestErrorの再利用）は、レビューで
+-- 確認の上、design.mdを`{ code: "FORBIDDEN" } | { code:
+-- "CALL_REQUEST_NOT_FOUND" }`という専用の`ResolveCallRequestError`型へ
+-- 修正することを推奨する（タスク完了報告のCONCERNSに記載）。
+--
+-- =========================================================================
+-- 設計判断18: CALL_REQUEST_NOT_FOUND — 「実在しない」と「既にresolved」を
+--   同一コードへ収束させ、新規に'P0445'を割り当てる
+-- =========================================================================
+-- close_session（4.1）のSESSION_NOT_ACTIVE（存在しない場合も既にclosedの
+-- 場合も区別しない）、remove_order_item/update_order_item_status（4.2/4.3）の
+-- ORDER_ITEM_NOT_FOUND（存在しない場合も所属セッションがclosedの場合も
+-- 区別しない）と同じ前例に従い、resolve_call_requestも「対象IDが実在せず
+-- 操作できない」と「対象IDは実在するが現在の状態では操作できない
+-- （既にresolved）」を区別せず単一のエラーコードへ収束させる。この操作は
+-- 「未対応(open)の呼び出しを対応済みにする」という一方向の状態遷移のみを
+-- 意図しており、design.mdのCallRequest型・呼び出しライフサイクル
+-- （open -> resolved、逆方向の遷移は存在しない）を踏まえれば、「resolved
+-- からopenへの巻き戻し」も「resolved呼び出しへの再度のresolve」もどちらも
+-- 許可されるべき操作ではなく、呼び出し元には「もう対応不要」という単一の
+-- 意味を返せば十分である。
+--
+-- 実装方式: set_sold_out（設計判断16）と同じ「UPDATE ... WHERE id = $1 AND
+-- status = 'open' RETURNING * into ...; if not found then raise exception」
+-- という単一文パターンを踏襲する。存在しないcall_request_id・既にresolvedな
+-- call_request_idのいずれも、このWHERE句の条件を満たす行が0件になることへ
+-- 自然に収束するため、追加の分岐は不要である。
+--
+-- 新規コード'P0445': 既存の採番済みコード（P0400/P0401/P0403/P0404/P0405
+-- [本ファイル、設計判断16]/P0409/P0410/P0412/P0422/P0423/P0429/P0444）の
+-- いずれとも衝突しない。ORDER_ITEM_NOT_FOUND（'P0444'）の次のサブコードで
+-- あり、どちらも「対象IDは実在するが、所属する親エンティティ・自身の状態が
+-- 既に確定済みであるため操作を受け付けない」という同型の意味論
+-- （order_items: 所属セッションがclosed / call_requests: 自身が既にresolved）
+-- を持つNOT_FOUND系コード同士であることを想起しやすい採番とした。
+--
+-- =========================================================================
+-- 設計判断19: resolve_call_requestの戻り値 — design.mdのCallRequest型
+--   （resolvedAtを持たない）に忠実に、resolved_atをレスポンスに含めない
+-- =========================================================================
+-- design.mdのCallRequest型は`{ id: string; sessionId: string; status: "open"
+-- | "resolved"; createdAt: string }`のみを定義し、`resolvedAt`フィールドを
+-- 持たない（create_call_request, 0003が返すjsonbのキー構成と完全に同一の
+-- 4キーのみ）。0001_schema.sqlのcall_requests.resolved_at列自体は当然DBに
+-- 保持する（設計判断18のWHERE句・観測可能な完了条件の検証対象として必須）が、
+-- 本関数のjsonbレスポンスにはresolvedAtキーを含めない。design.mdの型定義に
+-- 明示的に無いフィールドを独自にレスポンスへ追加するのは、将来の
+-- TypeScriptラッパー（4.6）が実装するCallRequest型と実際のRPCレスポンス
+-- 形状との間に、design.mdだけからは読み取れない暗黙の追加フィールドを生む
+-- ため、型定義に忠実に留める。
+--
+-- =========================================================================
+-- 設計判断20: SECURITY DEFINER + search_path=''、EXECUTE権限
+-- =========================================================================
+-- 両関数とも、authenticatedロールが直接の書き込み権限を持たないmenu_items・
+-- call_requests（いずれも0002でRLS有効化・権限剥奪済み）へ書き込む必要が
+-- あるため、start_session等（4.1-4.3）と同じSECURITY DEFINERが必須となる。
+-- search_pathなりすまし対策として`set search_path = ''`を設定し、本文内の
+-- 全参照（public.menu_items, public.call_requests, public.assert_device_role）
+-- をスキーマ修飾する。EXECUTE権限はauthenticatedにのみ付与し、anonには
+-- 一切付与しない（客側の匿名anon経路専用のCustomerOrderingGatewayとは
+-- 独立した、スタッフデバイス専用の書き込み経路であるため。0004の他の
+-- 全StaffOperationsGateway RPCと同一のGRANT/REVOKEパターン）。
+
+-- =========================================================================
+-- set_sold_out RPC
+-- =========================================================================
+create or replace function public.set_sold_out(
+  p_menu_item_id uuid,
+  p_sold_out boolean
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_menu_item public.menu_items;
+begin
+  -- 1. device_role検証（設計判断14: kitchenロール限定）を必ず先頭で行う。
+  perform public.assert_device_role(array['kitchen']);
+
+  -- 2. 存在確認と更新を単一のUPDATE文で行う（設計判断16）。menu_itemsの
+  --    sold_out列のみを変更対象とし、order_itemsには一切触れない
+  --    （要件7.4、タスクの観測可能な完了条件）。
+  update public.menu_items
+  set sold_out = p_sold_out
+  where id = p_menu_item_id
+  returning * into v_menu_item;
+
+  if not found then
+    raise exception 'menu item % not found', p_menu_item_id
+      using errcode = 'P0405';
+  end if;
+
+  return jsonb_build_object(
+    'id', v_menu_item.id,
+    'storeId', v_menu_item.store_id,
+    'name', v_menu_item.name,
+    'price', v_menu_item.price,
+    'soldOut', v_menu_item.sold_out
+  );
+end;
+$$;
+
+comment on function public.set_sold_out(uuid, boolean) is
+  '厨房（authenticated, device_role=''kitchen''。設計判断14参照）が品目の
+   売り切れ状態を切り替える際に呼び出すStaffOperationsGatewayの書き込み系RPC
+   （要件7.1, 7.3。実行前確認自体はUI層KitchenBoardの責務であり、本関数は
+   確認済みの呼び出しのみを受け取る）。冒頭でassert_device_role(array[''kitchen''])
+   を検証する（それ以外のdevice_role・claim欠如はカスタムSQLSTATE ''P0403''、
+   assert_device_role自身が送出）。対象のmenu_item_idが実在しない場合は
+   カスタムSQLSTATE ''P0405''（ITEM_NOT_FOUND、本タスクで新規割当。設計判断16
+   参照）を送出し、何も更新しない。成功時はmenu_items.sold_outのみを更新した
+   MenuItem（id/storeId/name/price/soldOut）を返し、order_itemsには一切
+   触れない（要件7.4。この非影響はSQL文の構造自体（menu_itemsのみを対象と
+   する単一UPDATE文）により保証される）。SECURITY DEFINER + search_path=''''は
+   他のStaffOperationsGateway RPCと同じsearch_pathなりすまし対策を踏襲する
+   （設計判断20）。';
+
+revoke execute on function public.set_sold_out(uuid, boolean)
+  from public, anon, authenticated;
+
+grant execute on function public.set_sold_out(uuid, boolean) to authenticated;
+
+-- =========================================================================
+-- resolve_call_request RPC
+-- =========================================================================
+create or replace function public.resolve_call_request(
+  p_call_request_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_call_request public.call_requests;
+begin
+  -- 1. device_role検証（設計判断15: registerロール限定）を必ず先頭で行う。
+  perform public.assert_device_role(array['register']);
+
+  -- 2. openな呼び出しのみを対象に更新する（設計判断18）。実在しない場合も
+  --    既に'resolved'の場合も区別せず単一のエラーコードへ収束させる。
+  update public.call_requests
+  set status = 'resolved',
+      resolved_at = now()
+  where id = p_call_request_id
+    and status = 'open'
+  returning * into v_call_request;
+
+  if not found then
+    raise exception 'call request % not found or already resolved', p_call_request_id
+      using errcode = 'P0445';
+  end if;
+
+  -- design.mdのCallRequest型はresolvedAtを持たないため、レスポンスにも
+  -- 含めない（設計判断19）。
+  return jsonb_build_object(
+    'id', v_call_request.id,
+    'sessionId', v_call_request.session_id,
+    'status', v_call_request.status,
+    'createdAt', v_call_request.created_at
+  );
+end;
+$$;
+
+comment on function public.resolve_call_request(uuid) is
+  'レジ（authenticated, device_role=''register''。設計判断15参照）が呼び出しを
+   対応済みにする際に呼び出すStaffOperationsGatewayの書き込み系RPC（要件2.4）。
+   冒頭でassert_device_role(array[''register''])を検証する（それ以外の
+   device_role・claim欠如はカスタムSQLSTATE ''P0403''、assert_device_role自身が
+   送出）。対象のcall_request_idが実在しない場合、および実在するが既に
+   ''resolved''の場合の両方について、カスタムSQLSTATE ''P0445''
+   （CALL_REQUEST_NOT_FOUND、本タスクで新規割当。設計判断18参照）を同一の
+   エラーコードとして送出し、何も更新しない。成功時はstatus=''resolved''・
+   resolved_at=now()に更新した後のCallRequest（id/sessionId/status/createdAt。
+   design.mdのCallRequest型にresolvedAtが無いためレスポンスにも含めない、
+   設計判断19）を返す。
+   CONCERN（設計判断17参照）: design.mdのService Interfaceは本メソッドの
+   エラー型として3.3のCallRequestError（{SESSION_NOT_ACTIVE}|
+   {CALL_ALREADY_OPEN}）を再利用するよう注釈しているが、本関数の入力
+   （callRequestIdのみ、sessionIdを含まない）・操作の意味（既存のopenな
+   呼び出しをresolvedにする。新規作成の重複防止とは無関係）のいずれとも
+   一致せず、他の全StaffOperationsGatewayエラー型が持つFORBIDDENも欠けて
+   いるため、design.md作成時のコピー&ペースト起因のgapと判断した。本関数は
+   その型注釈をそのまま実装せず、実際に必要な{FORBIDDEN,
+   CALL_REQUEST_NOT_FOUND}を実装する。レビューでの確認の上、design.mdを
+   専用の`ResolveCallRequestError`型へ修正することを推奨する。
+   成功後、当該呼び出しが属していたセッションへの新規create_call_request
+   （0003）は、call_requests_open_session_id_key（セッションあたり未対応の
+   呼び出しは高々1件という部分ユニークインデックス、0003設計判断7）の対象から
+   外れる（本行のstatusが''open''でなくなるため）ため、通常どおり成功する
+   ようになる。SECURITY DEFINER + search_path=''''は他のStaffOperationsGateway
+   RPCと同じsearch_pathなりすまし対策を踏襲する（設計判断20）。';
+
+revoke execute on function public.resolve_call_request(uuid)
+  from public, anon, authenticated;
+
+grant execute on function public.resolve_call_request(uuid) to authenticated;
