@@ -761,3 +761,233 @@ revoke execute on function public.remove_order_item(uuid)
   from public, anon, authenticated;
 
 grant execute on function public.remove_order_item(uuid) to authenticated;
+
+-- =========================================================================
+-- タスク4.3: update_order_item_status RPC
+-- =========================================================================
+-- Requirements: 5.7, 6.2, 6.3, 6.4, 6.5, 6.6, 6.10
+-- Design: design.mdの StaffOperationsGateway コンポーネント（Responsibilities &
+--   Constraints「updateOrderItemStatusは対象の注文明細が属する品目のジャンルを
+--   見て、許可される遷移を判定する。フード/一品ジャンルはreceived → in_progress
+--   → done、ドリンクジャンルはreceived → doneのみを許可する（要件6.3, 6.4, 5.7）」
+--   「一品ジャンルの品目に限り、receivedからin_progressを経由せず直接doneへ
+--   遷移する呼び出しも許可する（要件6.6）」、Invariants「updateOrderItemStatusは
+--   対象品目のジャンルに応じた許可遷移表の範囲内でのみ遷移を許可し、それ以外は
+--   INVALID_TRANSITIONとする」、Service Interface: updateOrderItemStatus /
+--   UpdateOrderItemStatusInput / UpdateOrderItemStatusError）を参照。
+--
+-- スコープ: update_order_item_status単体のみ。set_sold_out /
+--   resolve_call_request（4.4）、list_kitchen_feed / list_register_feed（4.5）は
+--   本タスクの対象外（4.1冒頭コメントの通り、それぞれ4.4/4.5で本ファイルへ
+--   追記される想定）。
+--
+-- =========================================================================
+-- 設計判断11: device_role — kitchen/register両方を許可する
+--   （4.1/4.2のregister限定パターンをそのまま流用しない）
+-- =========================================================================
+-- 4.1（設計判断1）・4.2（設計判断6）は、design.mdのResponsibilities &
+-- Constraints冒頭の粗い境界（authenticatedかつdevice_roleがkitchenまたは
+-- registerのいずれか）を各メソッドがそのまま両方に開放してよいわけではないと
+-- 判断し、要件文書のEARS主語（いずれも「レジスタッフ」）に基づきregister限定と
+-- した。updateOrderItemStatusについても同じ判断基準を適用するが、今回は
+-- 要件文書・design.md双方の一次資料が明確に「両ロールから呼ばれる」ことを
+-- 示しており、4.1/4.2とは結論が異なる。
+--
+-- 根拠(a) 要件文書: 本RPCが対応する要件は6.5（「厨房スタッフが品目のステータスを
+-- 更新する」、主語は厨房スタッフ・厨房KDSサービス）と5.7（「レジスタッフが
+-- 品目のステータスを更新する操作を行う」、主語はレジスタッフ・レジサービス）の
+-- 両方であり、4.1/4.2の要件（3.1-3.5、5.5、5.6）がいずれも「レジスタッフ」
+-- 単独主語だったのとは異なり、本RPCは要件文書レベルで最初から両ロールの操作
+-- として明記されている。
+--
+-- 根拠(b) design.md: StaffOperationsGateway Responsibilities & Constraintsの
+-- updateOrderItemStatusに関する記述（「対象の注文明細が属する品目のジャンルを
+-- 見て、許可される遷移を判定する...（要件6.3, 6.4, 5.7）」）は、4.1のstart_session
+-- 等の記述文（「レジスタッフの入店操作」等、明示的にレジ主体の業務文脈のみを
+-- 述べる）とは異なり、根拠として引く要件番号自体に厨房系（6.3, 6.4）とレジ系
+-- （5.7）の両方を含めている。Requirements Traceability表でも「5.5-5.7 | レジ
+-- からの品目追加・削除・ステータス変更」と「6.1, 6.2, 6.5, 6.8, 6.9 | ...
+-- StaffOperationsGateway, RealtimeFeed | listKitchenFeed, updateOrderItemStatus」
+-- の両方の行にupdateOrderItemStatus（または要件5.7）が登場する。さらにdesign.md
+-- のKitchenBoard UI説明「各ボードは...ジャンルに応じたステータス更新UIを提供し」、
+-- RegisterConsole UI説明「...ステータス変更...はいずれも実行前に確認ダイアログを
+-- 表示し、確認後にのみ対応するStaffOperationsGatewayのメソッドを呼び出す
+-- （要件3.3, 3.5, 5.5-5.7）」の両方が本RPCの利用を明記する。
+--
+-- 4.1/4.2のCONCERN注記が「design.mdの緩い言い回しより要件文書のEARS主語を
+-- 優先した」結果register限定としたのとは対照的に、本RPCは要件文書とdesign.md
+-- （Responsibilities & Constraints・Requirements Traceability・UI説明の
+-- いずれも）が一致して両ロールでの利用を述べており、優先すべき一次資料同士に
+-- 矛盾がない。過度な制限（本来許可すべきregisterロールをFORBIDDENにしてしまう
+-- こと）は過度な開放と同程度の欠陥であるため、要件・設計の記述通り
+-- `assert_device_role(array['kitchen','register'])`とする。
+--
+-- =========================================================================
+-- 設計判断12: ジャンル別許可遷移表とエラーコード
+-- =========================================================================
+-- order_items.status（0001のCHECK制約）は'received'/'in_progress'/'done'の
+-- 3値のみを許容するが、実際にどの遷移が許可されるかはmenu_items.genreに
+-- 依存するため、他テーブルを参照する条件はCHECK制約で表現できない
+-- （0001 Consistency & Integrity参照）。よって本関数内でジャンル別の許可
+-- 遷移表を判定ロジックとして実装する:
+--   genre = 'food' : received -> in_progress, in_progress -> done のみ許可
+--   genre = 'ippin': received -> in_progress, in_progress -> done に加えて
+--                    received -> done の直接ショートカットも許可（要件6.6）
+--   genre = 'drink': received -> done のみ許可（in_progressは経由しない、
+--                    要件6.4）
+-- 上記以外の要求（後退遷移、同一ステータスへの遷移、food/drinkジャンルへの
+-- 誤ったショートカット要求等）はすべてINVALID_TRANSITIONとする。
+--
+-- ORDER_ITEM_NOT_FOUND: 4.2のremove_order_item（設計判断9）が確立した
+-- カスタムSQLSTATE 'P0444'をそのまま再利用する。remove_order_itemの
+-- ORDER_ITEM_NOT_FOUNDは「注文明細idが実在しない」場合と「実在するが所属
+-- セッションが既にclosed」場合の両方をあえて同一コードへ収束させる設計判断
+-- だったが、design.mdのUpdateOrderItemStatusErrorはORDER_ITEM_NOT_FOUNDの
+-- みを定義し、セッションのactive/closed状態に関する専用のエラーコード
+-- （SESSION_NOT_ACTIVE相当）を一切要求していない。本関数はセッションの
+-- active/closed状態を検証条件に含めない（design.mdのInvariants・
+-- Responsibilities & Constraintsのいずれもそのような検証を要求していないため。
+-- 調理ステータス更新は本質的にセッションのライフサイクルとは独立した関心事
+-- である）。したがってここでのORDER_ITEM_NOT_FOUNDは純粋に「指定された
+-- order_item_idが実在しない」という意味のみを持ち、remove_order_itemの
+-- ORDER_ITEM_NOT_FOUND（「実在しない、または実在するがセッションがclosed」）
+-- とは判定条件が異なる。しかし両者は「呼び出し元が参照した注文明細を対象と
+-- した操作が実行できない」という同一のエラー意味論（0003冒頭の設計判断8が
+-- 確立した「同一の意味には同一のコードを使う」原則）を共有するため、新規の
+-- SQLSTATEを割り当てず'P0444'を再利用する。
+--
+-- INVALID_TRANSITION: 既存のP0400/P0401/P0403/P0404/P0409/P0410/P0412/
+-- P0423/P0429/P0444のいずれとも意味が異なる新規のエラーのため、新規に
+-- 'P0422'を割り当てる。当初'P0429'（HTTPの429を想起させる番号）を検討したが、
+-- 実装直前に0003_rpc_customer_gateway.sqlを確認したところ、'P0429'は既に
+-- タスク3.5のRATE_LIMITED（submit_orderのセッション単位レート制限超過）に
+-- 割り当て済みであることが判明した。RATE_LIMITEDとINVALID_TRANSITIONは
+-- 全く異なる意味（前者は「短時間の呼び出し過多」、後者は「対象品目の現在
+-- ステータス・ジャンルに対して許可されない遷移」）であり、0003冒頭の設計判断8
+-- 「同一の意味には同一のコードを使う」の裏返しである「異なる意味には異なる
+-- コードを使う」に従い、流用せず新規のサブコードを選び直す。'P0422'は
+-- HTTPの422 Unprocessable Entity（リクエスト自体は構文的に正しいが、現在の
+-- リソース状態に対して意味的に処理できない）を想起させ、「遷移として構文上は
+-- 妥当なstatus値だが、対象品目の現在状態・ジャンルに対しては許可されない」
+-- というINVALID_TRANSITIONの意味に合致する。既存の採番済みコード
+-- （P0400/P0401/P0403/P0404/P0409/P0410/P0412/P0423/P0429/P0444）のいずれとも
+-- 衝突しないことを本関数実装直前に確認した。design.mdのUpdateOrderItemStatusError型が要求する
+-- { from, to }はDETAIL句にJSON文字列として載せる（既存のDETAILパターンは
+-- 単一のスカラー値=文字列のみだったが、本エラーは2つのフィールドを持つ
+-- オブジェクトを返す必要があるため、jsonb_build_objectの結果をtext化して
+-- DETAILへ格納する。呼び出し側のTypeScriptラッパー（4.6、本タスクの対象外）
+-- がJSON.parseしてfrom/toを取り出す想定）。
+--
+-- =========================================================================
+-- 設計判断13: 対象品目のジャンルのlookupとSELECT ... FOR UPDATE
+-- =========================================================================
+-- order_itemsは自身のgenreを持たず、menu_item_id経由でmenu_itemsを参照する
+-- 必要がある（0001 Logical/Physical Data Model参照）。1クエリのjoinで
+-- 現在のstatusとgenreの両方を取得し、行ロック（FOR UPDATE）を掛けてから
+-- 判定・更新することで、同一注文明細への同時更新リクエストが競合した場合に
+-- 古い状態を読んだままの判定（TOCTOU）を避ける。取得できなければ
+-- ORDER_ITEM_NOT_FOUND（設計判断12）。
+create or replace function public.update_order_item_status(
+  p_order_item_id uuid,
+  p_status text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_current_status text;
+  v_genre text;
+  v_allowed boolean := false;
+  v_row record;
+begin
+  -- 1. device_role検証（設計判断11: kitchen/register両方を許可）。
+  perform public.assert_device_role(array['kitchen', 'register']);
+
+  -- 2. 対象の注文明細の現在のstatusと、所属品目のgenreを1クエリのjoinで取得し、
+  --    行ロックする（設計判断13）。存在しない場合はORDER_ITEM_NOT_FOUND。
+  select oi.status, mi.genre
+    into v_current_status, v_genre
+    from public.order_items oi
+    join public.menu_items mi on mi.id = oi.menu_item_id
+    where oi.id = p_order_item_id
+    for update of oi;
+
+  if not found then
+    raise exception 'order item % not found', p_order_item_id
+      using errcode = 'P0444';
+  end if;
+
+  -- 3. ジャンル別の許可遷移表を判定する（設計判断12）。
+  if v_genre = 'food' then
+    v_allowed :=
+      (v_current_status = 'received' and p_status = 'in_progress')
+      or (v_current_status = 'in_progress' and p_status = 'done');
+  elsif v_genre = 'ippin' then
+    v_allowed :=
+      (v_current_status = 'received' and p_status = 'in_progress')
+      or (v_current_status = 'in_progress' and p_status = 'done')
+      -- 要件6.6: 一品ジャンルのみ received -> done の直接ショートカットを許可。
+      or (v_current_status = 'received' and p_status = 'done');
+  elsif v_genre = 'drink' then
+    -- 要件6.4: ドリンクはin_progressを経由しない。
+    v_allowed := (v_current_status = 'received' and p_status = 'done');
+  end if;
+
+  if not v_allowed then
+    raise exception 'invalid status transition from % to % for order item %',
+      v_current_status, p_status, p_order_item_id
+      using errcode = 'P0422',
+            detail = jsonb_build_object(
+              'from', v_current_status,
+              'to', p_status
+            )::text;
+  end if;
+
+  -- 4. 許可された遷移のみ、statusとstatus_updated_atを更新する（要件6.10）。
+  update public.order_items
+  set status = p_status,
+      status_updated_at = now()
+  where id = p_order_item_id
+  returning id, menu_item_id, name_snapshot, unit_price_snapshot, quantity, options_summary, status, status_updated_at
+    into v_row;
+
+  return jsonb_build_object(
+    'id', v_row.id,
+    'menuItemId', v_row.menu_item_id,
+    'name', v_row.name_snapshot,
+    'unitPrice', v_row.unit_price_snapshot,
+    'quantity', v_row.quantity,
+    'optionsSummary', v_row.options_summary,
+    'status', v_row.status,
+    'statusUpdatedAt', v_row.status_updated_at
+  );
+end;
+$$;
+
+comment on function public.update_order_item_status(uuid, text) is
+  '厨房（device_role=''kitchen''）・レジ（device_role=''register''）の両方から
+   呼び出されるStaffOperationsGatewayの書き込み系RPC（要件5.7, 6.2, 6.3, 6.4,
+   6.5, 6.6, 6.10。設計判断11参照: 4.1/4.2のregister限定パターンとは異なり、
+   本RPCは要件文書・design.md双方が両ロールでの利用を明記するため
+   assert_device_role(array[''kitchen'',''register''])とする）。対象の注文明細が
+   実在しない場合はカスタムSQLSTATE ''P0444''（ORDER_ITEM_NOT_FOUND、4.2の
+   remove_order_itemと同一の意味で再利用）を送出する。対象品目のgenre
+   （food/ippin/drink）に応じた許可遷移表の範囲外の遷移要求（後退遷移・
+   同一ステータスへの遷移・food/drinkジャンルでのreceived->done直接
+   ショートカット要求を含む）はカスタムSQLSTATE ''P0422''（INVALID_TRANSITION、
+   本タスクで新規割当。P0429は3.5のRATE_LIMITEDが既に使用しているため流用せず
+   選び直した。DETAILに{from,to}のJSON文字列を含む）を送出し、何も
+   更新しない。許可された遷移のみstatusとstatus_updated_at=now()を更新する
+   （要件6.10、調理完了列の直近完了順ソートキー）。フード/一品ジャンルは
+   received -> in_progress -> doneの段階的遷移のみ、一品ジャンルのみ追加で
+   received -> doneの直接ショートカットを許可し（要件6.6）、ドリンクジャンルは
+   received -> doneのみを許可する（in_progressを経由しない、要件6.4）。
+   SECURITY DEFINER + search_path=''''は他のStaffOperationsGateway RPCと
+   同じsearch_pathなりすまし対策を踏襲する。';
+
+revoke execute on function public.update_order_item_status(uuid, text)
+  from public, anon, authenticated;
+
+grant execute on function public.update_order_item_status(uuid, text) to authenticated;

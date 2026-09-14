@@ -370,6 +370,10 @@ export type Database = {
         Args: { p_idempotency_key: string; p_items: Json; p_session_id: string }
         Returns: Json
       }
+      update_order_item_status: {
+        Args: { p_order_item_id: string; p_status: string }
+        Returns: Json
+      }
       update_party_size: {
         Args: { p_party_size: number; p_session_id: string }
         Returns: Json

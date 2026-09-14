@@ -382,6 +382,7 @@ type CallRequestError = { code: "SESSION_NOT_ACTIVE" } | { code: "CALL_ALREADY_O
 - `addOrderItem`は`CustomerOrderingGateway.submitOrder`と同じ検証（セッションが`active`か、品目が売り切れでないか、`optionSelections`が品目の`options`定義と整合しているか）をレジ起点の追加にも適用する。`startSession`等と同様`register`ロール限定とし、`kitchen`ロールからの呼び出しは`FORBIDDEN`とする（要件5.5、要件6には品目追加・削除に相当する記述がなく厨房UIにも当該操作はないため）
 - `removeOrderItem`は指定された注文明細を削除する。会計後の履歴改ざんを防ぐため、対象セッションが既に`closed`の場合は`ORDER_ITEM_NOT_FOUND`として拒否する（要件5.6）
 - `updateOrderItemStatus`は対象の注文明細が属する品目のジャンルを見て、許可される遷移を判定する。フード/一品ジャンルは`received → in_progress → done`、ドリンクジャンルは`received → done`のみを許可する（要件6.3, 6.4, 5.7）
+- `updateOrderItemStatus`は対象セッションが`active`か`closed`かを検証しない（意図的な設計判断）。調理ステータスは金額集計（`confirmedTotal`等）に一切寄与せず、要件4.3も終了済みセッションの注文履歴を「削除しない」ことのみを求めるため、会計後のステータス変更を禁止する実益がない。`removeOrderItem`（要件5.6、履歴改ざん防止のため`closed`セッションを拒否）とは異なる意図的な非対称性であり、実装漏れではない
 - 一品ジャンルの品目に限り、`received`から`in_progress`を経由せず直接`done`へ遷移する呼び出しも許可する（要件6.6）
 - `listKitchenFeed`が返す未対応（`received`）の品目一覧は、一品ジャンルを受注時刻に関わらず先頭に、それ以外は受注時刻の昇順で並べる（要件6.7）
 - `listKitchenFeed`が返す調理完了（`done`）の品目一覧は、`status_updated_at`の降順（直近に完了したものが先頭）で並べる（要件6.10）

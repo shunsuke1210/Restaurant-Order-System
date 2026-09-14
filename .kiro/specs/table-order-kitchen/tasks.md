@@ -92,7 +92,7 @@
   - _Requirements: 5.5, 5.6_
   - _Depends: 4.1_
 
-- [ ] 4.3 update_order_item_status RPCの実装
+- [x] 4.3 update_order_item_status RPCの実装
   - 品目のジャンルに応じた許可遷移（フード/一品: received→in_progress→done、ドリンク: received→done、一品のみreceived→done直接遷移も許可）を検証するRPCを実装する
   - ステータスを変更するたびに`status_updated_at`を現在時刻で更新する
   - 観測可能な完了条件: ドリンクジャンルの品目に対して`in_progress`への遷移を要求すると`INVALID_TRANSITION`が返る
