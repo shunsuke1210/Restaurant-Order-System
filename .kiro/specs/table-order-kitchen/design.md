@@ -379,7 +379,7 @@ type CallRequestError = { code: "SESSION_NOT_ACTIVE" } | { code: "CALL_ALREADY_O
 - `startSession`は入力された`partySize`をセッションに記録し、部分ユニークインデックス違反を`SESSION_ALREADY_ACTIVE`として返す（要件3.1, 3.2, 3.4）
 - `closeSession`はアクティブなセッションのみを対象とし、既に`closed`のセッションに対しては`SESSION_NOT_ACTIVE`を返す
 - `updatePartySize`は対象セッションが`active`である場合のみ人数を更新し、既に`closed`のセッションに対しては`SESSION_NOT_ACTIVE`を返す。実行前確認はUI層（RegisterConsole）の責務とする（要件3.5）
-- `addOrderItem`は`CustomerOrderingGateway.submitOrder`と同じ検証（セッションが`active`か、品目が売り切れでないか、`optionSelections`が品目の`options`定義と整合しているか）をレジ/厨房起点の追加にも適用する（要件5.5）
+- `addOrderItem`は`CustomerOrderingGateway.submitOrder`と同じ検証（セッションが`active`か、品目が売り切れでないか、`optionSelections`が品目の`options`定義と整合しているか）をレジ起点の追加にも適用する。`startSession`等と同様`register`ロール限定とし、`kitchen`ロールからの呼び出しは`FORBIDDEN`とする（要件5.5、要件6には品目追加・削除に相当する記述がなく厨房UIにも当該操作はないため）
 - `removeOrderItem`は指定された注文明細を削除する。会計後の履歴改ざんを防ぐため、対象セッションが既に`closed`の場合は`ORDER_ITEM_NOT_FOUND`として拒否する（要件5.6）
 - `updateOrderItemStatus`は対象の注文明細が属する品目のジャンルを見て、許可される遷移を判定する。フード/一品ジャンルは`received → in_progress → done`、ドリンクジャンルは`received → done`のみを許可する（要件6.3, 6.4, 5.7）
 - 一品ジャンルの品目に限り、`received`から`in_progress`を経由せず直接`done`へ遷移する呼び出しも許可する（要件6.6）

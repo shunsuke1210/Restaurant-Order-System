@@ -329,6 +329,15 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      add_order_item: {
+        Args: {
+          p_menu_item_id: string
+          p_option_selections: Json
+          p_quantity: number
+          p_session_id: string
+        }
+        Returns: Json
+      }
       assert_device_role: {
         Args: { allowed_roles: string[] }
         Returns: undefined
@@ -352,6 +361,7 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      remove_order_item: { Args: { p_order_item_id: string }; Returns: Json }
       start_session: {
         Args: { p_party_size: number; p_table_id: string }
         Returns: Json

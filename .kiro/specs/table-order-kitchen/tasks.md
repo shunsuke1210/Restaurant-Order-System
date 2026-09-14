@@ -86,7 +86,7 @@
   - _Boundary: StaffOperationsGateway_
   - _Depends: 1.3, 1.4, 2.1, 2.2_
 
-- [ ] 4.2 add_order_item / remove_order_item RPCの実装
+- [x] 4.2 add_order_item / remove_order_item RPCの実装
   - `submit_order`と同等の検証（セッション有効性・売り切れ）を適用した品目追加と、閉じたセッションへの削除を拒否する品目削除を実装する
   - 観測可能な完了条件: 既に会計済み（`closed`）のセッションの注文明細を削除しようとすると`ORDER_ITEM_NOT_FOUND`が返る
   - _Requirements: 5.5, 5.6_
