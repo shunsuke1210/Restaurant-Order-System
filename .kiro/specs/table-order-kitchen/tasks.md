@@ -118,7 +118,7 @@
   - _Requirements: 2.2, 2.4, 3.1, 3.2, 3.3, 3.4, 3.5, 4.1, 4.2, 4.3, 4.4, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 6.8, 6.9, 6.10, 7.1, 7.3, 7.4_
   - _Depends: 4.1, 4.2, 4.3, 4.4, 4.5_
 
-- [ ] 5. useRealtimeFeedフックの実装
+- [x] 5. useRealtimeFeedフックの実装
   - `order_items`/`table_sessions`/`call_requests`への`postgres_changes`購読と、切断検知時に対応する一覧再取得関数（`listKitchenFeed`/`listRegisterFeed`/`getOrderingContext`）を呼び直す再同期ロジックを実装する
   - 観測可能な完了条件: 購読中にネットワークを切断し再接続すると、一覧が最新状態に再取得される
   - _Requirements: 1.12, 6.1, 6.8, 6.9_
@@ -290,4 +290,5 @@
 - 2.3で判明：`vitest.config.mts`は元々`.env.local`を`process.env`へロードしていなかった（Vite/Vitestの既定動作では`.env.local`は自動ロードされない）。修正済み（`loadEnv`をマージ、シェル/CI環境変数が優先されるよう順序を維持）。この修正前は、統合テストが`process.env.X ?? "<ハードコードされたfallback値>"`という書き方をしていると、実際には常にfallback値でテストしていた（`.env.local`の値と偶然一致していただけ）。**今後、環境変数に依存する新しいテストを書く際は、ハードコードされたfallback値を使わず、値が未設定なら`beforeAll`等で明確なエラーを投げてfail-fastすること**（シークレット的な値の場合は特に、fallbackがgit管理ファイルへの平文漏洩の抜け道になる）。
 - `src/lib/gateways/customerOrderingGateway.ts`（3.4）の各メソッドは、ドキュメント化されたエラーコード以外の予期しないエラー（ネットワーク断等）を`Result`に含めず例外としてthrowする（`src/lib/result.ts`/`useDeviceIdentity.ts`から続く既存の規約）。**そのため6.x（CustomerOrderApp UI）でこのゲートウェイを呼び出す際は、必ずtry/catchで例外を捕捉すること**（Reactのエラーバウンダリはイベントハンドラ内の非同期例外を自動捕捉しないため、素通りすると画面に何も表示されないまま失敗する）。
 - 3.5のレート制限は、PL/pgSQLの1関数呼び出し=1トランザクションという性質上、セッション有効性/売り切れ等の検証で`RAISE EXCEPTION`する呼び出しはカウンタへのUPSERTごとロールバックされ、集計対象にできない（意図的なv1スコープの割り切りとしてレビュー済み・承認済み）。有効なセッション・品目に対する大量送信のみが対象。同一セッションからの`submit_order`はカウンタ行のロックにより直列化されるため、将来1卓あたりの同時注文数が大きく増える場合はレイテンシへの影響を再検討すること。
+- タスク5で判明：Realtimeの`postgres_changes`は(a)対象テーブルが`supabase_realtime` publicationに登録されていること、(b)購読側ロールがRLSでSELECT可視であること、の両方が必要（片方だけでは配信されない、または中身の無いエラーメッセージのみ配信される）。`order_items`/`table_sessions`/`call_requests`のSELECT権限は`authenticated`（kitchen/register）にのみ付与し、**`anon`（客）には意図的に付与していない**——`using(true)`はanonにJWTクレームが無い以上「制限なし」と同義であり、Realtimeの`filter`パラメータはクライアント側の任意ヒントに過ぎず生のwebsocket呼び出しで省略できるため、店舗全体の注文明細（品目名・数量・金額・session_id等）が漏洩しうる。CustomerOrderApp（6.x）で確定注文合計のリアルタイム更新を実装する際は、`anon`にorder_itemsのSELECTを広げるのではなく、(1) Realtime Broadcast + `realtime.messages`をsession_idトピックでRLSスコープする方式、または(2) `get_ordering_context`の単純ポーリング、を検討すること。第三の案として、GRANTなしでpublicationにだけ追加すると中身の無い「変更があった」シグナルのみ配信されることを確認済みだが、これは`realtime.apply_rls`の内部実装詳細に依存するため6.x着手時に再検証すること。
 - 4.1で確認：`0004_rpc_staff_gateway.sql`は`0006_assert_device_role.sql`（ファイル名順で後に適用される）の関数を呼び出すが、これは問題ない。PL/pgSQL関数は本体を`CREATE FUNCTION`時にコンパイルせず、初回呼び出し時に初めて解決するため（`check_function_bodies=on`でも前方参照は許容される、Postgres公式ドキュメントで確認済み）。実機の`db:reset`でも実証済み。4.2-4.5は同じ`0004`ファイルに追記していく計画なので基本的に再検討不要だが、新しい番号のマイグレーションファイルを追加する場合はこの前提（呼び出し先の関数は「全マイグレーション適用後の初回呼び出し時点」で存在していればよい）を踏まえること。

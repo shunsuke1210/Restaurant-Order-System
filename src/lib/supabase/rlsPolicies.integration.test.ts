@@ -182,14 +182,50 @@ describe("0002_rls_policies.sql: RLSと権限のロックダウン（結合テ�
     });
 
     // authenticatedにはmenu_itemsのSELECT権限も付与しない
-    // （anon専用の最小例外であり、device_role未検証のauthenticatedには広げない）
-    it.each(ALL_TABLES)("%s へのSELECTも拒否される（menu_items含む）", async (table) => {
-      const result = await runAsRole(
-        roleClient,
-        "authenticated",
-        `select 1 from ${table}`,
-      );
-      expect(result).toEqual({ ok: false, code: INSUFFICIENT_PRIVILEGE });
-    });
+    // （anon専用の最小例外であり、device_role未検証のauthenticatedには広げない）。
+    //
+    // ただしorder_items/table_sessions/call_requestsの3テーブルは例外。
+    // 0008_realtime_publication.sql（タスク5、useRealtimeFeedフックが
+    // 前提とするRealtime購読の基盤整備）が、kitchen/registerロール向けに
+    // この3テーブルへのSELECT権限＋RLSポリシーを追加した
+    // （Supabase Realtimeのpostgres_changesが行の変更を配信する前に
+    // `has_column_privilege(role, entity, pk_column, 'SELECT')`を要求する
+    // ため、RLSポリシーだけでなくテーブルレベルのGRANTも必須になる。
+    // 0008マイグレーションのコメント参照）。そのためこの3テーブルは
+    // 「テーブルレベル権限自体が無い」ことによる42501エラーはもう起きない
+    // （GRANTは存在する）。device_role未検証（本テストのように
+    // request.jwt.claimsが空でauth.jwt()がNULLを返す状況）では、
+    // RLSポリシー（`(auth.jwt() ->> 'device_role') in ('kitchen',
+    // 'register')`）が`NULL in (...)` = NULL（falsy）として全行を除外する
+    // ため、クエリ自体は成功し0件が返るという形でアクセス不能が実現される。
+    const tablesWithoutAnySelectGrant = ALL_TABLES.filter(
+      (table) =>
+        table !== "order_items" &&
+        table !== "table_sessions" &&
+        table !== "call_requests",
+    );
+    it.each(tablesWithoutAnySelectGrant)(
+      "%s へのSELECTも拒否される（menu_items含む）",
+      async (table) => {
+        const result = await runAsRole(
+          roleClient,
+          "authenticated",
+          `select 1 from ${table}`,
+        );
+        expect(result).toEqual({ ok: false, code: INSUFFICIENT_PRIVILEGE });
+      },
+    );
+
+    it.each(["order_items", "table_sessions", "call_requests"] as const)(
+      "%s へのSELECTはクエリとして成功するが、device_role未検証のためRLSで0件になる（0008マイグレーション参照）",
+      async (table) => {
+        const result = await runAsRole(
+          roleClient,
+          "authenticated",
+          `select 1 from ${table}`,
+        );
+        expect(result).toEqual({ ok: true, rowCount: 0 });
+      },
+    );
   });
 });
