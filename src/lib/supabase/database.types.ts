@@ -333,6 +333,7 @@ export type Database = {
         Args: { allowed_roles: string[] }
         Returns: undefined
       }
+      close_session: { Args: { p_session_id: string }; Returns: Json }
       create_call_request: { Args: { p_session_id: string }; Returns: Json }
       custom_access_token_hook: { Args: { event: Json }; Returns: Json }
       get_ordering_context: { Args: { p_table_id: string }; Returns: Json }
@@ -351,8 +352,16 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      start_session: {
+        Args: { p_party_size: number; p_table_id: string }
+        Returns: Json
+      }
       submit_order: {
         Args: { p_idempotency_key: string; p_items: Json; p_session_id: string }
+        Returns: Json
+      }
+      update_party_size: {
+        Args: { p_party_size: number; p_session_id: string }
         Returns: Json
       }
     }

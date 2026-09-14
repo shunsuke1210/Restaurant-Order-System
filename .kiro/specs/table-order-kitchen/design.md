@@ -375,7 +375,7 @@ type CallRequestError = { code: "SESSION_NOT_ACTIVE" } | { code: "CALL_ALREADY_O
 | Requirements | 2.4, 3.1-3.5, 4.1-4.4, 5.1-5.7, 6.1-6.10, 7.1, 7.3, 7.4 |
 
 **Responsibilities & Constraints**
-- `authenticated`ロールかつJWTの`device_role`クレームが`kitchen`または`register`である場合のみ実行を許可する（関数内で`auth.jwt()`を検証）
+- `authenticated`ロールかつJWTの`device_role`クレームが`kitchen`または`register`である場合のみ実行を許可する（関数内で`auth.jwt()`を検証）。ただしこれは「客ではなくスタッフデバイスであること」という粗い境界であり、メソッドごとに許可ロールをさらに絞り込む（`list_kitchen_feed`/`list_register_feed`が対象読者ごとに分かれるのと同様）。`startSession`/`closeSession`/`updatePartySize`は要件3（レジスタッフの操作）にのみ紐づくため`register`ロール限定とし、`kitchen`ロールからの呼び出しは`FORBIDDEN`とする
 - `startSession`は入力された`partySize`をセッションに記録し、部分ユニークインデックス違反を`SESSION_ALREADY_ACTIVE`として返す（要件3.1, 3.2, 3.4）
 - `closeSession`はアクティブなセッションのみを対象とし、既に`closed`のセッションに対しては`SESSION_NOT_ACTIVE`を返す
 - `updatePartySize`は対象セッションが`active`である場合のみ人数を更新し、既に`closed`のセッションに対しては`SESSION_NOT_ACTIVE`を返す。実行前確認はUI層（RegisterConsole）の責務とする（要件3.5）

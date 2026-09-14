@@ -77,7 +77,7 @@
   - _Depends: 3.4_
 
 - [ ] 4. Core: StaffOperationsGateway（厨房/レジの唯一の書き込み経路）
-- [ ] 4.1 (P) start_session / close_session / update_party_size RPCの実装
+- [x] 4.1 (P) start_session / close_session / update_party_size RPCの実装
   - 人数を記録して新規セッションを発行する`start_session`、確認済みの会計操作を受けてセッションを終了する`close_session`、来店中のセッションの人数を変更する`update_party_size`を実装する
   - 部分ユニークインデックス違反を`SESSION_ALREADY_ACTIVE`として処理し、`device_role`検証を先頭で行う。`update_party_size`は対象セッションが`closed`の場合`SESSION_NOT_ACTIVE`を返す
   - 観測可能な完了条件: アクティブセッションが既にある卓に対する`start_session`が`SESSION_ALREADY_ACTIVE`エラーを返す
@@ -290,3 +290,4 @@
 - 2.3で判明：`vitest.config.mts`は元々`.env.local`を`process.env`へロードしていなかった（Vite/Vitestの既定動作では`.env.local`は自動ロードされない）。修正済み（`loadEnv`をマージ、シェル/CI環境変数が優先されるよう順序を維持）。この修正前は、統合テストが`process.env.X ?? "<ハードコードされたfallback値>"`という書き方をしていると、実際には常にfallback値でテストしていた（`.env.local`の値と偶然一致していただけ）。**今後、環境変数に依存する新しいテストを書く際は、ハードコードされたfallback値を使わず、値が未設定なら`beforeAll`等で明確なエラーを投げてfail-fastすること**（シークレット的な値の場合は特に、fallbackがgit管理ファイルへの平文漏洩の抜け道になる）。
 - `src/lib/gateways/customerOrderingGateway.ts`（3.4）の各メソッドは、ドキュメント化されたエラーコード以外の予期しないエラー（ネットワーク断等）を`Result`に含めず例外としてthrowする（`src/lib/result.ts`/`useDeviceIdentity.ts`から続く既存の規約）。**そのため6.x（CustomerOrderApp UI）でこのゲートウェイを呼び出す際は、必ずtry/catchで例外を捕捉すること**（Reactのエラーバウンダリはイベントハンドラ内の非同期例外を自動捕捉しないため、素通りすると画面に何も表示されないまま失敗する）。
 - 3.5のレート制限は、PL/pgSQLの1関数呼び出し=1トランザクションという性質上、セッション有効性/売り切れ等の検証で`RAISE EXCEPTION`する呼び出しはカウンタへのUPSERTごとロールバックされ、集計対象にできない（意図的なv1スコープの割り切りとしてレビュー済み・承認済み）。有効なセッション・品目に対する大量送信のみが対象。同一セッションからの`submit_order`はカウンタ行のロックにより直列化されるため、将来1卓あたりの同時注文数が大きく増える場合はレイテンシへの影響を再検討すること。
+- 4.1で確認：`0004_rpc_staff_gateway.sql`は`0006_assert_device_role.sql`（ファイル名順で後に適用される）の関数を呼び出すが、これは問題ない。PL/pgSQL関数は本体を`CREATE FUNCTION`時にコンパイルせず、初回呼び出し時に初めて解決するため（`check_function_bodies=on`でも前方参照は許容される、Postgres公式ドキュメントで確認済み）。実機の`db:reset`でも実証済み。4.2-4.5は同じ`0004`ファイルに追記していく計画なので基本的に再検討不要だが、新しい番号のマイグレーションファイルを追加する場合はこの前提（呼び出し先の関数は「全マイグレーション適用後の初回呼び出し時点」で存在していればよい）を踏まえること。
