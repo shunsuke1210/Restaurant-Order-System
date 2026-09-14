@@ -1348,3 +1348,487 @@ revoke execute on function public.resolve_call_request(uuid)
   from public, anon, authenticated;
 
 grant execute on function public.resolve_call_request(uuid) to authenticated;
+
+-- =========================================================================
+-- タスク4.5: list_kitchen_feed / list_register_feed RPC
+-- =========================================================================
+-- Requirements: 2.2, 5.1, 5.2, 5.3, 5.4, 6.1, 6.7, 6.8, 6.9, 6.10
+-- Design: design.mdの StaffOperationsGateway コンポーネント（Responsibilities &
+--   Constraints「listKitchenFeedが返す未対応（received）の品目一覧は、一品
+--   ジャンルを受注時刻に関わらず先頭に、それ以外は受注時刻の昇順で並べる
+--   （要件6.7）」「listKitchenFeedが返す調理完了（done）の品目一覧は、
+--   status_updated_atの降順（直近に完了したものが先頭）で並べる（要件6.10）」
+--   「listRegisterFeedは各卓の現在アクティブなセッションの人数・注文明細・
+--   合計金額を返す（要件5.1, 5.4）。アクティブセッションがない卓は
+--   activeSession: nullとして返す（要件5.2）。この合計計算はCustomerOrdering
+--   Gateway.getOrderingContextが返すconfirmedTotalと同一のロジックを共有する」
+--   「listRegisterFeedは...未対応(open)の呼び出しが存在するかをhasOpenCall
+--   Requestとして返す（要件2.2）」、Service Interface: listKitchenFeed /
+--   listRegisterFeed / ListFeedInput / TableBillingSummary、Requirements
+--   Traceability「5.1-5.4 | ... | listRegisterFeed」「6.1, 6.2, 6.5, 6.8, 6.9 |
+--   ... | listKitchenFeed, updateOrderItemStatus」「2.1-2.4 | ... |
+--   listRegisterFeed（hasOpenCallRequest）」を参照。
+--
+-- スコープ: list_kitchen_feed / list_register_feedの2関数のみ。
+--   StaffOperationsGatewayのTypeScriptラッパー（4.6）、いかなるUI
+--   （KitchenBoard/RegisterConsole、7.x/8.x）も本タスクの対象外。
+--
+-- 本タスクの完了により、design.mdのFile Structure Planが想定する
+-- 0004_rpc_staff_gateway.sqlの全10関数（start_session, close_session,
+-- update_party_size, add_order_item, remove_order_item,
+-- update_order_item_status, set_sold_out, resolve_call_request,
+-- list_kitchen_feed, list_register_feed）がすべて本ファイルに揃う。
+--
+-- =========================================================================
+-- 設計判断21: device_role — list_kitchen_feedはkitchen限定、
+--   list_register_feedはregister限定（両者は相互排他的な読者を持つ）
+-- =========================================================================
+-- 4.1（設計判断1）・4.2（設計判断6）・4.4（設計判断14・15）が確立した判断基準
+-- 「StaffOperationsGateway全体を許可するという最も粗い境界を、各メソッドが
+-- そのまま両方に開放してよいわけではなく、実際にどちらのロールに絞るかは
+-- 各メソッドが紐づく要件の業務文脈で決まる」を、本タスクの2関数にも適用する。
+-- 4.3（updateOrderItemStatus、要件文書・design.mdの双方が両ロールでの利用を
+-- 明記していたため両ロール許可とした）とは対照的に、本タスクの2関数は
+-- 「厨房向け一覧」「レジ向け一覧」という完全に分離した対象読者を持つ
+-- （タスク文書自体が「KitchenBoardはlistKitchenFeedに依存し、RegisterConsoleは
+-- listRegisterFeedに依存する。これらは対象読者ごとに分かれる、両ロールから
+-- 呼ばれるべきものではない」と明記する）。
+--
+-- 根拠(a) 要件文書: list_kitchen_feedが対応する要件6系列は主語が一貫して
+-- 「厨房KDSサービス」「厨房スタッフ」である（6.1「厨房画面へ表示する」、
+-- 6.7「未対応の一覧の上部に表示する」、6.8「卓の識別情報と受注時刻が判別
+-- できる形で一覧表示する」、6.10「直近に調理完了となった品目ほど一覧の上部に
+-- 表示する」）。レジスタッフの関与は要件6には一切登場しない。一方
+-- list_register_feedが対応する要件5系列は主語が一貫して「レジスタッフ」
+-- 「レジサービス」である（5.1「レジスタッフが卓を選択する」、5.4「レジ
+-- サービスは全卓について...一覧表示する」）。要件2.2（呼び出し通知を
+-- レジ側の画面に表示する）も主語が明確にレジ側の画面であり、
+-- hasOpenCallRequestをlistRegisterFeedのみが持つ（listKitchenFeedの戻り値
+-- 型には呼び出し関連フィールドが一切ない）design.mdのService Interfaceと
+-- 整合する。
+--
+-- 根拠(b) design.md: Requirements Traceability表の行「6.1, 6.2, 6.5, 6.8,
+-- 6.9 | ... | StaffOperationsGateway, RealtimeFeed | listKitchenFeed,
+-- updateOrderItemStatus」にlistRegisterFeedは一切登場せず、「5.1-5.4 |
+-- レジでの卓別会計確認表示・全卓の状況一覧 | StaffOperationsGateway |
+-- listRegisterFeed」にlistKitchenFeedは一切登場しない。「2.1-2.4 | ... |
+-- createCallRequest, resolveCallRequest, listRegisterFeed
+-- （hasOpenCallRequest）」の行にもlistKitchenFeedは登場しない。KitchenBoard
+-- のUI説明文は「フードボードの未対応列は一品ジャンルを優先表示し...調理完了
+-- 列は直近に完了したものを上部に表示する」とlistKitchenFeedの挙動のみに
+-- 言及し、RegisterConsoleのUI説明文は「各卓のタイルに人数・経過時間・合計
+-- 金額・呼び出し中バッジを表示する」とlistRegisterFeedの挙動のみに言及する。
+-- どちらのUI説明文にも相手側のRPCへの言及は一切ない。
+--
+-- 以上、要件文書・design.mdの両方が「厨房向け一覧」「レジ向け一覧」という
+-- 対象読者ごとの完全な分離を一貫して示しており（4.3のように両者の一次資料が
+-- 交差するケースではない）、`list_kitchen_feed`は
+-- `assert_device_role(array['kitchen'])`、`list_register_feed`は
+-- `assert_device_role(array['register'])`のみを許可する
+-- （いずれも`array['kitchen','register']`は採用しない）。
+--
+-- =========================================================================
+-- 設計判断22: list_kitchen_feedの並び順
+--   — 単一のCTE + 3つのランク列で、ステータスごとに異なるタイブレーク
+--     ロジックを1本のORDER BYに合成する
+-- =========================================================================
+-- design.mdのlistKitchenFeedの戻り値型はReadonlyArray<OrderItemSummary &
+-- {tableId, tableLabel, genre}>というフラットな配列であり
+-- （ステータス別に事前グルーピングされたオブジェクトではない）、statusは
+-- 各要素のフィールドとして含まれる。よって「未対応/調理中/調理完了の3分割
+-- カンバン」への分割は将来のKitchenBoard UI（7.2、本タスクの対象外）が
+-- クライアント側でstatusによってフィルタする責務であり、本RPCの責務は
+-- 「クライアントがstatusでグルーピングした際、各グループ内の相対順序が
+-- 正しくなるような1本のフラット配列を返す」ことに限られる。配列を
+-- statusでグルーピングしても同一status同士の相対順序（＝配列内での出現順）は
+-- 保たれるため、複数のstatusにまたがるグローバルなソートキーであっても、
+-- 各status内の相対順序さえ正しければ要件を満たす。
+--
+-- 各ステータス内で必要なタイブレークが異なる:
+--   - received（未対応、要件6.7）: 一品ジャンルを受注時刻に関わらず先頭、
+--     それ以外は受注時刻の昇順（design.md「一品ジャンルを受注時刻に関わらず
+--     先頭に、それ以外は受注時刻の昇順で並べる」）
+--   - done（調理完了、要件6.10）: status_updated_atの降順（直近完了が先頭）
+--   - in_progress（調理中）: design.md・要件文書のいずれも並び順を規定しない。
+--     本実装は「受注時刻の昇順」を既定値として採用する（received群の
+--     タイブレークと同じ基準を流用し、調理中に移った後も「先に受け付けた
+--     順」という直感的な並びを保てるため。他に規定がないための実装者裁量の
+--     選択であり、将来要件が明示されれば見直す）。
+--
+-- 「受注時刻」の実体: order_items自体は受注時刻に相当する独立の列を
+-- 持たない（0001_schema.sqlのorder_itemsにはcreated_at相当の列がない）。
+-- 受注時刻の一次資料はordersテーブルのcreated_at（客のsubmit_order、または
+-- レジのadd_order_itemが新規ordersコンテナ行を発行した瞬間。要件6.8の
+-- 「受注時刻」に対応する）である。status_updated_atは初回挿入時にdefault
+-- now()でordersのcreated_atとほぼ同時刻の値を持つため、received状態の
+-- 品目に限っては代用できなくもないが、意味的にはstatus_updated_atは
+-- 「直近のステータス変更時刻」であり「受注時刻」そのものではない
+-- （0001_schema.sqlの列コメント参照）。したがって受注時刻のタイブレークには
+-- o.created_at（orders.created_at）を用い、status_updated_atはdone群専用の
+-- ソートキーとしてのみ用いる、という役割分担を明確に保つ。
+--
+-- 実装: CTE（kitchen_feed_rows）で対象行を1回だけ抽出し、3つのランク列を
+--   計算する:
+--     status_rank    : received=0 / in_progress=1 / done=2（必須要件では
+--                       ないが、グルーピング前の生JSONでもステータスごとに
+--                       まとまった見た目になり、デバッグ・テストでの目視
+--                       確認が容易になるため付与する。クライアント側の
+--                       グルーピング結果には一切影響しない）
+--     tier_rank      : status='received' かつ genre='ippin' の場合のみ0、
+--                       それ以外は1（received群限定のippin優先。他の
+--                       statusでは常に1になり無効化される＝done/
+--                       in_progressの並びに一切影響しない）
+--     sort_key (double precision): status='done'の場合は
+--                       -extract(epoch from status_updated_at)（降順を
+--                       昇順ORDER BYの中で表現するための符号反転。値が
+--                       大きい＝より最近完了＝符号反転後はより小さい値に
+--                       なり、ASCソートで先頭に来る）、それ以外は
+--                       extract(epoch from o.created_at)（受注時刻の昇順、
+--                       符号反転なし）
+--   最終的に`order by status_rank, tier_rank, sort_key, id`（idは同一
+--   マイクロ秒内の完全な同時刻等、理論上の同値ケースに対する決定的な最終
+--   タイブレーク）で1本のORDER BYに統合する。status_rank/tier_rank/
+--   sort_keyのいずれも他のステータス群の並びに影響を与えないよう定数化・
+--   無効化されているため、「1つのORDER BY式で複数の異なるタイブレーク
+--   ロジックを共存させる」ことがcorrectに実現される（3つの独立したソート
+--   要求を、各行が属するstatusに応じて一部の列を定数化することで安全に
+--   合成する、というのが本設計の要）。テストデータは意図的に「自然な挿入
+--   順・id生成順とは逆」になるよう構成し（listKitchenFeed.integration.
+--   test.ts参照）、挿入順やid順に依存した実装では失敗するようにしてある。
+--
+-- =========================================================================
+-- 設計判断23: list_register_feedのtotal計算
+--   — get_ordering_context（0003）のconfirmedTotalと文字通り同一の式にする
+-- =========================================================================
+-- design.mdは「この合計計算はCustomerOrderingGateway.getOrderingContextが
+-- 返すconfirmedTotalと同一のロジックを共有する」と明示的に要求する
+-- （0003_rpc_customer_gateway.sqlのget_ordering_context冒頭コメントにも
+-- 「将来実装されるStaffOperationsGateway.listRegisterFeedのtotal計算と
+-- 完全に一致させなければならない」と対になる注記がある）。
+--
+-- get_ordering_contextの実際の式（0003より）:
+--   select coalesce(sum(oi.unit_price_snapshot * oi.quantity), 0)
+--   from public.order_items oi
+--   join public.orders o on o.id = oi.order_id
+--   where o.session_id = v_active_session_id;
+-- （statusによる絞り込みは行わない。received/in_progress/doneいずれの
+-- 状態の品目も等しく合計に含める）。
+--
+-- 本関数はこれと文字通り同一の集計式（`sum(oi.unit_price_snapshot *
+-- oi.quantity)`、statusによる絞り込みなし、対象はアクティブセッションの
+-- order_items全件）をLATERAL副問い合わせ内に実装する。将来この2箇所の
+-- いずれかを変更する場合は、他方も同時に見直すこと（design.mdの
+-- Revalidation Triggers相当の注意点）。この一致は
+-- listRegisterFeed.integration.test.tsが、同一セッションに対して
+-- list_register_feedのtotalとget_ordering_contextのconfirmedTotalを
+-- 実際に両方呼び出し、直接比較することで保証する（design.mdが明示的に
+-- 要求する、本specで最も重要なクロスタスク整合性検証）。
+--
+-- =========================================================================
+-- 設計判断24: list_register_feedの構造
+--   — 全卓をLEFT JOINの起点にし、アクティブセッションの明細集計は
+--     LEFT JOIN LATERALで1回の問い合わせに統合する
+-- =========================================================================
+-- 要件5.4「全卓について、空席/来店中の状態...を一覧表示する」に対応するため、
+-- クエリの起点はtable_sessionsではなくtables（store_id = p_store_idで
+-- スコープ）とし、`left join table_sessions ts on ts.table_id = t.id and
+-- ts.status = 'active'`でアクティブセッションの有無を左外部結合する。
+-- アクティブセッションがない卓はts.*が全列NULLになるため、
+-- `case when ts.id is null then null else jsonb_build_object(...) end`で
+-- design.mdの`activeSession: null`をそのまま表現できる（要件5.2）。
+--
+-- 明細集計（items配列とtotal）は`left join lateral (...) on true`で
+-- 1回だけ計算する。集計関数（jsonb_agg/sum）はGROUP BYなしでも常に
+-- ちょうど1行を返す（対象行が0件でも列値がNULLの1行を返す）ため、
+-- `on true`のLATERAL結合で「アクティブセッションが存在すれば実際の
+-- 明細/合計、存在しなければ（ts.idがNULLのためLATERAL内のwhere句
+-- `o.session_id = ts.id`が恒偽になり）NULL」という分岐が自然に成立する。
+-- 外側で`coalesce(billing.items, '[]'::jsonb)`・
+-- `coalesce(billing.total, 0)`によりNULLを設計文書どおりの`[]`/`0`へ
+-- 変換する。この構造により、「アクティブセッションはあるがまだ注文が
+-- 0件」の卓（入店直後）も、items: []・total: 0を自然に返す
+-- （設計判断23のconfirmedTotal側と同じ「セッションはあるが注文明細が
+-- まだない場合は0」という挙動と一致する）。
+--
+-- hasOpenCallRequestはLATERALを使わず、jsonb_build_object内の相関
+-- サブクエリ`exists(select 1 from call_requests where session_id = ts.id
+-- and status = 'open')`として直接評価する。ts.idがNULLの場合、この
+-- 相関条件は恒偽となり自然にfalseへ収束するため、活性セッションの
+-- 有無による分岐を追加で書く必要がない（要件2.2・design.mdの
+-- hasOpenCallRequest定義）。
+--
+-- items配列の各要素（menuItemId/name/quantity/unitPrice）は
+-- design.mdのTableBillingSummary.items型に忠実に、order_items 1行を
+-- そのまま1要素として列挙する（OrderItemSummaryのようなid/status等の
+-- 追加フィールドは持たない、単純な会計明細行）。集計や重複排除は
+-- 行わない（design.mdの型定義・Responsibilities & Constraintsのいずれも
+-- 「同一menuItemIdの明細をまとめる」ことを要求していないため。
+-- Simplification原則にも従い、order_items単位でそのまま列挙する）。
+--
+-- 卓の一覧順序はdesign.mdが規定しないため、get_ordering_contextの
+-- メニュー一覧が採用する`order by 名前, id`という並び（0003参照）と
+-- 同じ考え方で`order by t.label, t.id`とする。
+--
+-- =========================================================================
+-- 設計判断25: エラー面 — assert_device_roleのFORBIDDEN以外は一切送出しない
+--   （design.mdの`never`エラー型に対応）
+-- =========================================================================
+-- design.mdのService Interfaceは両関数とも
+--   `Promise<Result<..., never>>`
+-- と、エラー型を`never`と宣言する。TypeScriptの`never`は「値を持たない型」
+-- であり、構造的に`{ code: "FORBIDDEN" }`を含む余地がない。しかし
+-- design.mdのPreconditions「全メソッドは呼び出し元JWTに有効なdevice_role
+-- クレームがあることを要求する。ない場合はFORBIDDENを返す」は「全
+-- メソッド」に例外を設けておらず、本タスクのプランニング段階で
+-- 検討した通り、assert_device_role自体がRAISE EXCEPTIONで例外を送出する
+-- 経路は、本関数の`returns jsonb`という宣言や将来のTypeScriptラッパー
+-- （4.6、本タスクの対象外）が採用するであろう`never`という型注釈とは
+-- 独立して常に発生し得る（PL/pgSQLのRAISE EXCEPTIONは呼び出し元へ
+-- 制御を戻さずトランザクション例外として即座に伝播するため、関数の
+-- 宣言上の戻り値型にRETURNが到達するかどうかとは無関係。0006の
+-- assert_device_role自体もvoidを返す関数として定義され、呼び出し元の
+-- 戻り値型と無関係に例外を送出する）。
+--
+-- したがって`never`は「assert_device_roleが送出するFORBIDDEN（PostgRESTの
+-- error.code経由でSupabase-jsが例外的に投げる、Resultのエラーメンバー
+-- としてはモデル化されない）を除けば、本関数はいかなる業務エラーも
+-- 返さない（返せない）」という意味であると解釈する。この解釈は、
+-- 4.1のImplementation Notes「予期しないエラーはResultに含めず例外として
+-- throwする」という既存の規約（customerOrderingGateway.ts, 3.4）とも
+-- 整合する。将来のTypeScriptラッパー（4.6）は、これら2関数の呼び出しで
+-- 発生したエラー（P0403を含むあらゆるerror）を、Result<T, never>という
+-- 型注釈のとおりResultのエラーメンバーとしてではなく、常に例外として
+-- そのままthrowする実装になる見込みである。
+--
+-- 本関数自体は上記の解釈に基づき、assert_device_roleの呼び出し以外に
+-- 一切のRAISE EXCEPTIONを追加しない（対象店舗が存在しない場合や、
+-- 該当する卓が0件の場合であっても、design.mdの型定義に対応する専用の
+-- エラーコードが存在しないため、単に空配列jsonbを返す。0003の
+-- get_ordering_contextのように「卓が存在しない」を専用のTABLE_NOT_FOUND
+-- として扱うRPCとは異なり、本タスクの2関数の入力はp_store_id
+-- （店舗全体のスコープ）であり、「その店舗に卓が1つもない」という状態は
+-- 業務上の異常系ではなく単に空の一覧として自然に表現できるため、
+-- 専用のガードを追加しない。Simplification原則にも従う）。
+--
+-- =========================================================================
+-- 設計判断26: SECURITY DEFINER + stable + search_path=''、EXECUTE権限
+-- =========================================================================
+-- 両関数とも、authenticatedロールが直接の閲覧権限を持たないtable_sessions/
+-- orders/order_items/call_requests（いずれも0002でRLS有効化・権限剥奪
+-- 済み）を読み取る必要があるため、他のStaffOperationsGateway RPCと同じ
+-- SECURITY DEFINERが必須となる。search_pathなりすまし対策として
+-- `set search_path = ''`を設定し、本文内の全参照（public.tables,
+-- public.table_sessions, public.orders, public.order_items,
+-- public.menu_items, public.call_requests, public.assert_device_role）を
+-- スキーマ修飾する。両関数とも書き込みを一切行わない閲覧専用RPCのため、
+-- get_ordering_context（0003）と同様に`stable`を付与する。EXECUTE権限は
+-- authenticatedにのみ付与し、anonには一切付与しない（0004の他の全
+-- StaffOperationsGateway RPCと同一のGRANT/REVOKEパターン）。
+
+-- =========================================================================
+-- list_kitchen_feed RPC
+-- =========================================================================
+create or replace function public.list_kitchen_feed(
+  p_store_id uuid
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+  v_result jsonb;
+begin
+  -- 1. device_role検証（設計判断21: kitchenロール限定）を必ず先頭で行う。
+  perform public.assert_device_role(array['kitchen']);
+
+  -- 2. 対象店舗の全order_itemsを、卓・メニュー情報付きで1回抽出し、
+  --    3つの並び替え用ランク列を計算する（設計判断22）。
+  with kitchen_feed_rows as (
+    select
+      oi.id,
+      oi.menu_item_id,
+      oi.name_snapshot,
+      oi.unit_price_snapshot,
+      oi.quantity,
+      oi.options_summary,
+      oi.status,
+      oi.status_updated_at,
+      t.id as table_id,
+      t.label as table_label,
+      mi.genre,
+      case oi.status
+        when 'received' then 0
+        when 'in_progress' then 1
+        when 'done' then 2
+        else 3
+      end as status_rank,
+      case
+        when oi.status = 'received' and mi.genre = 'ippin' then 0
+        else 1
+      end as tier_rank,
+      case
+        when oi.status = 'done' then -extract(epoch from oi.status_updated_at)
+        else extract(epoch from o.created_at)
+      end as sort_key
+    from public.order_items oi
+    join public.orders o on o.id = oi.order_id
+    join public.table_sessions ts on ts.id = o.session_id
+    join public.tables t on t.id = ts.table_id
+    join public.menu_items mi on mi.id = oi.menu_item_id
+    where t.store_id = p_store_id
+  )
+  select coalesce(
+    jsonb_agg(
+      jsonb_build_object(
+        'id', id,
+        'menuItemId', menu_item_id,
+        'name', name_snapshot,
+        'unitPrice', unit_price_snapshot,
+        'quantity', quantity,
+        'optionsSummary', options_summary,
+        'status', status,
+        'statusUpdatedAt', status_updated_at,
+        'tableId', table_id,
+        'tableLabel', table_label,
+        'genre', genre
+      )
+      order by status_rank, tier_rank, sort_key, id
+    ),
+    '[]'::jsonb
+  )
+  into v_result
+  from kitchen_feed_rows;
+
+  return v_result;
+end;
+$$;
+
+comment on function public.list_kitchen_feed(uuid) is
+  '厨房（authenticated, device_role=''kitchen''。設計判断21参照）が受注一覧を
+   取得する際に呼び出すStaffOperationsGatewayの閲覧系RPC（要件2.2, 5.1-5.4,
+   6.1, 6.7-6.10のうち厨房向けの並び替え・表示に関する部分）。冒頭で
+   assert_device_role(array[''kitchen''])を検証する（それ以外のdevice_role・
+   claim欠如はカスタムSQLSTATE ''P0403''、assert_device_role自身が送出。
+   design.mdの`never`エラー型に対応する解釈は設計判断25参照）。対象店舗の
+   全order_items（tables経由でstore_idスコープ）を、design.mdの
+   OrderItemSummary型にtableId/tableLabel/genreを加えたキー構成のjsonb配列
+   として返すフラットな配列であり、statusによる3分割（未対応/調理中/調理
+   完了）はクライアント側の責務とする。並び順は設計判断22の3ランク列
+   （status_rank, tier_rank, sort_key）による単一のORDER BYで、
+   受信side（received）は一品ジャンルを受注時刻に関わらず先頭・それ以外は
+   受注時刻（orders.created_at）の昇順（要件6.7）、調理完了（done）は
+   status_updated_atの降順（要件6.10、直近完了が先頭）、調理中
+   （in_progress）は既定値として受注時刻の昇順（要件文書に規定がないため
+   実装者裁量）を、クライアントがstatusでグルーピングした後も正しい
+   相対順序になるよう合成する。SECURITY DEFINER + search_path='''' +
+   stableは他の閲覧系RPC（get_ordering_context, 0003）と同じ構成。';
+
+revoke execute on function public.list_kitchen_feed(uuid)
+  from public, anon, authenticated;
+
+grant execute on function public.list_kitchen_feed(uuid) to authenticated;
+
+-- =========================================================================
+-- list_register_feed RPC
+-- =========================================================================
+create or replace function public.list_register_feed(
+  p_store_id uuid
+)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+declare
+  v_result jsonb;
+begin
+  -- 1. device_role検証（設計判断21: registerロール限定）を必ず先頭で行う。
+  perform public.assert_device_role(array['register']);
+
+  -- 2. 対象店舗の全卓を起点に、アクティブセッションをLEFT JOINし、
+  --    明細集計をLEFT JOIN LATERALで1回だけ計算する（設計判断24）。
+  select coalesce(
+    jsonb_agg(
+      jsonb_build_object(
+        'tableId', t.id,
+        'tableLabel', t.label,
+        'activeSession',
+          case
+            when ts.id is null then null
+            else jsonb_build_object(
+              'id', ts.id,
+              'startedAt', ts.started_at,
+              'partySize', ts.party_size
+            )
+          end,
+        'items', coalesce(billing.items, '[]'::jsonb),
+        'total', coalesce(billing.total, 0),
+        'hasOpenCallRequest', exists (
+          select 1
+          from public.call_requests cr
+          where cr.session_id = ts.id
+            and cr.status = 'open'
+        )
+      )
+      order by t.label, t.id
+    ),
+    '[]'::jsonb
+  )
+  into v_result
+  from public.tables t
+  left join public.table_sessions ts
+    on ts.table_id = t.id and ts.status = 'active'
+  left join lateral (
+    select
+      jsonb_agg(
+        jsonb_build_object(
+          'menuItemId', oi.menu_item_id,
+          'name', oi.name_snapshot,
+          'quantity', oi.quantity,
+          'unitPrice', oi.unit_price_snapshot
+        )
+        order by oi.id
+      ) as items,
+      -- 設計判断23: get_ordering_context（0003）のconfirmedTotalと
+      -- 文字通り同一の集計式（statusによる絞り込みなし）。
+      sum(oi.unit_price_snapshot * oi.quantity) as total
+    from public.order_items oi
+    join public.orders o on o.id = oi.order_id
+    where o.session_id = ts.id
+  ) billing on true
+  where t.store_id = p_store_id;
+
+  return v_result;
+end;
+$$;
+
+comment on function public.list_register_feed(uuid) is
+  'レジ（authenticated, device_role=''register''。設計判断21参照）が卓
+   マップ・卓別会計確認一覧を取得する際に呼び出すStaffOperationsGatewayの
+   閲覧系RPC（要件2.2, 5.1-5.4）。冒頭でassert_device_role(array
+   [''register''])を検証する（それ以外のdevice_role・claim欠如はカスタム
+   SQLSTATE ''P0403''、assert_device_role自身が送出。design.mdの`never`
+   エラー型に対応する解釈は設計判断25参照）。対象店舗の全卓
+   （store_idスコープ、アクティブセッションの有無を問わず空席卓も含む、
+   要件5.4）を、design.mdのTableBillingSummary型と同じキー構成
+   （tableId/tableLabel/activeSession/items/total/hasOpenCallRequest）の
+   jsonb配列として返す。アクティブセッションがない卓はactiveSession: null・
+   items: []・total: 0・hasOpenCallRequest: falseとなる（要件5.2、設計判断
+   24）。activeSessionがある卓のtotalはget_ordering_context（0003）の
+   confirmedTotalと文字通り同一の集計式（unit_price_snapshot*quantityの
+   合計、statusによる絞り込みなし）で計算し、両者が常に一致することを
+   listRegisterFeed.integration.test.tsのクロスRPC検証で担保する（設計判断
+   23、design.mdが明示的に要求する整合性）。hasOpenCallRequestは対象
+   セッションに''open''のcall_requestsが存在するかを表し、
+   create_call_request（0003）/resolve_call_request（本ファイル）の
+   ライフサイクルに追随する（要件2.2）。SECURITY DEFINER +
+   search_path='''' + stableは他の閲覧系RPC（get_ordering_context, 0003;
+   list_kitchen_feed, 本ファイル）と同じ構成。';
+
+revoke execute on function public.list_register_feed(uuid)
+  from public, anon, authenticated;
+
+grant execute on function public.list_register_feed(uuid) to authenticated;
