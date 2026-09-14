@@ -291,6 +291,192 @@ grant execute on function public.get_ordering_context(uuid) to anon;
 -- 行ったすべての変更が破棄される。したがってこの経路でも「送信全体が失敗すれば
 -- 何も残らない」という不変条件（設計判断4）は保たれる。
 
+-- =========================================================================
+-- 設計判断9（タスク3.5で追加）: セッション単位レート制限 — 専用の追跡テーブルを
+--   新設し、submit_orderの「妥当な送信試行」（新規注文としての成立、または
+--   同一idempotencyKeyでの重複再送）をカウントする
+-- =========================================================================
+-- Context: design.md Security Considerations「submit_orderにセッション単位の
+--   レート制限を設け、QRコード流出時の大量不正送信を緩和する」、
+--   design.mdのCustomerOrderingGateway Implementation Notes「Risks」、
+--   research.mdのRisks & Mitigations「QRコードのSNS拡散等による大量不正注文
+--   ...submit_orderにセッション単位のレート制限（例: 1分あたりの送信回数上限）
+--   を設ける」への対応。
+--
+-- Alternatives Considered:
+--   1. ordersテーブルの当該session_idに対する直近作成行数を数える
+--      （新規テーブル不要）。
+--   2. 専用の追跡テーブル（session_id, ウィンドウ開始時刻, 件数）を新設し、
+--      submit_orderの呼び出しをカウントする。
+--
+-- 1を不採用とした理由: ordersに実際に挿入された行数だけを数えると、
+--   同一idempotencyKeyでの重複再送（設計判断3の冪等性ロジックにより新規行を
+--   作らずdeduplicated: trueを返す）が一切カウントされない。同一
+--   idempotencyKeyを使い回した高速な連打は新規注文を作らないため
+--   「大量不正“注文”」そのものではないが、依然としてsubmit_orderの実行
+--   そのもの（セッション検証・品目再検証・レスポンス組み立てを含む一連の
+--   処理）を大量に誘発できてしまい、緩和したいDB負荷の一部を取りこぼす。
+--   専用テーブルであればこのケースも捕捉できるため2を優先する。
+--   （なお、「セッションが存在しない/closed」「空配列」「売り切れ品目を含む」
+--   といった、そもそもordersへの書き込みに到達しない呼び出しについては、
+--   1・2いずれの方式でもカウントできない。この点は後述の設計判断10で
+--   扱う、本レート制限の意図的なスコープ限定である）。
+--
+-- 2を採用した理由: 「同一idempotencyKeyでの重複再送」を含めてカウントする
+--   必要があるため、orders/order_itemsに現れない情報（「このセッションに
+--   対してsubmit_orderが妥当な形で呼ばれた回数」）を独立に保持できる専用の
+--   状態が必要である。
+--
+-- 方式: session_idごとに1行のみを持つ固定ウィンドウ（fixed window）カウンタ
+--   とする（スライディングウィンドウ・トークンバケット等のより高精度な方式は、
+--   本タスクが緩和したい脅威（短時間の大量連続呼び出し）に対しては過剰な
+--   複雑さであり、Simplification原則に反する。ウィンドウ境界を跨ぐ瞬間に
+--   多少のバースト超過を許し得る点は固定ウィンドウ方式の既知の限界だが、
+--   research.mdの例示「1分あたりの送信回数上限」に忠実な最も単純な実装として
+--   妥当と判断する）。
+--
+-- 行数の有界性（unbounded growthの検討）: session_id列をtable_sessions.idへの
+--   外部キー・主キーとするため、本テーブルの行数は「これまでに作られた
+--   table_sessionsの行数」と1:1以下に自然に有界化される（リクエストのたびに
+--   新規行が増えるのではなく、既存行をUPSERTで更新するだけ）。table_sessions
+--   自体が要件4.3「終了後の履歴保持」により削除されず増え続ける設計を既に
+--   採用しているため、本テーブルの増加ペースはそれと同等以下であり、既存の
+--   設計が既に許容している増加パターンを超えない。したがって本タスクの範囲
+--   では専用のクリーンアップ処理（cronによる古い行の削除等）は過剰であり
+--   実装しない。将来table_sessionsの物理削除・アーカイブ機構が導入される
+--   場合は、on delete cascadeにより本テーブルの対応行も自動的に削除される。
+--
+-- スコープの独立性（「卓単位ではなくセッション単位」という要求への対応）:
+--   主キーをtable_idではなくsession_idとすることで、同一卓での「来店Aの
+--   セッション」と「来店Bのセッション」は独立したカウンタを持ち、また
+--   異なる卓のセッション同士も互いに影響しない（結合テスト
+--   submitOrderRateLimit.integration.test.tsのクロスセッション独立性検証を
+--   参照）。1来店＝1集約ルート（design.md Domain Model）という既存の設計
+--   単位ともそのまま一致する。
+create table public.submit_order_rate_limits (
+  session_id uuid primary key references public.table_sessions (id) on delete cascade,
+  window_started_at timestamptz not null default now(),
+  request_count int not null default 0
+);
+
+comment on table public.submit_order_rate_limits is
+  'submit_order（本ファイル）専用のセッション単位レート制限カウンタ
+   （タスク3.5、設計判断9参照）。session_idごとに1行のみを持つ固定ウィンドウ
+   方式で、window_started_atから一定時間内のrequest_countを保持する。
+   submit_order経由（SECURITY DEFINER）以外からの直接アクセスは想定しない
+   ため、anon/authenticatedへの権限は一切付与しない（直後のGRANT/RLS設定
+   参照）。';
+
+-- Supabaseはpublicスキーマに新規作成されたテーブルへ、postgresロールからの
+-- ALTER DEFAULT PRIVILEGESによりanon/authenticatedへの暗黙のフルアクセスを
+-- 自動付与する（0002_rls_policies.sqlの背景コメントで実機検証済みの挙動と
+-- 同一）。0002は0001時点で存在した8テーブルのみをrevoke対象としており、
+-- 本テーブルは0003で新規作成されるため0002のrevoke文の対象に含まれない。
+-- そのため同じ理由でRLS有効化＋明示的なrevokeをここでも行う
+-- （0002の「1. RLS有効化」「2. Deny-by-default」と同じ2段構成）。
+alter table public.submit_order_rate_limits enable row level security;
+
+revoke all on public.submit_order_rate_limits from public, anon, authenticated;
+
+-- =========================================================================
+-- 設計判断10（タスク3.5で追加）: レート制限の実行タイミング — 「妥当な送信
+--   試行」であることが確定した後（セッション有効性・空配列・売り切れ/
+--   オプション検証の後、ordersへの冪等INSERTの直前）に評価する
+-- =========================================================================
+-- Context: 「レート制限チェックはactive状態検証や売り切れチェックより前に
+--   置き、ペイロードの妥当性に関わらず生の呼び出し量そのものを絞るべきか、
+--   それとも後に置き『それ以外は妥当な試行』だけを数えるべきか」という
+--   トレードオフの検討。当初は前者（最も早い段階でチェックし、無効な
+--   ペイロードの連打も含めて絞る）を採用しようとしたが、実装検証の過程で
+--   PostgreSQLのトランザクション境界に起因する根本的な制約が判明し、
+--   後者を採用するに至った。その経緯を以下に記す。
+--
+-- 却下した案（チェックを最も早い段階、ステップ1の直後に置く）とその
+--   問題点: この案では、本関数が最終的にSESSION_NOT_ACTIVE/EMPTY_ORDER/
+--   ITEM_SOLD_OUTのいずれかをRAISE EXCEPTIONで送出する呼び出しであっても、
+--   その手前で行ったレート制限カウンタへのUPSERTは一旦「行われる」ように
+--   見える。しかしPostgreSQLでは、1回のRPC呼び出し（1回のトップレベル
+--   SQL文としてのsubmit_order呼び出し）全体が単一のトランザクションであり、
+--   関数外へ伝播する未捕捉の例外はそのトランザクション全体をロールバックする
+--   （設計判断6が既に述べている「関数全体が呼び出し元と同一のトランザクション
+--   として実行される」という性質そのもの）。実装時に実機で検証した結果、
+--   items: []（EMPTY_ORDER）を連続送信した場合、レート制限テーブルへの
+--   UPSERTは一度も永続化されないことを確認した（RAISE EXCEPTIONによって
+--   その呼び出し内で行った全ての書き込みが道連れで巻き戻されるため）。
+--   つまり「エラーになる呼び出しでもカウンタへの加算だけは残したい」という
+--   要求は、同一トランザクション内でRAISE EXCEPTIONを使う限り実現できない
+--   （PL/pgSQLのEXCEPTIONブロックが張る暗黙のSAVEPOINTは、例外を捕捉して
+--   握りつぶし関数が正常終了する場合にのみ効果を持つ。捕捉後に再送出
+--   （RAISE）したり、そもそも捕捉しない場合は、そのSAVEPOINT以前の変更も
+--   含めて最終的に全てロールバックされる）。回避するには、カウンタ更新を
+--   dblink等の拡張機能を用いた自律トランザクション（呼び出し元とは独立に
+--   即時コミットする別コネクション）にする必要があるが、v1のセキュリティ
+--   緩和策としては明らかに過剰な複雑さであり、かつ本specが新規に外部拡張
+--   機能への依存を追加することにもなるため不採用とした（Simplification
+--   原則）。また、後続の検証失敗を「エラーを返さず握りつぶし、常に正常応答
+--   を返す」ように本関数の契約自体を変更する案も検討したが、design.mdの
+--   SubmitOrderError契約・3.1-3.4で既に確立したSQLSTATEベースのエラーモデル・
+--   既存の結合テスト（submitOrder.integration.test.ts等）の前提を根本から
+--   破壊するため、本タスクのスコープ（submit_order関数の内部ロジック追加）を
+--   逸脱するとして不採用とした。
+--
+-- 採用した案（現在の実装）: レート制限の評価は、セッション有効性・空配列・
+--   品目の売り切れ/オプション検証をすべて通過した直後、ordersへの冪等
+--   INSERT（ステップ4）の直前に置く。この時点に到達した呼び出しは、
+--   （設計判断6が述べる「実在しないmenuItemId」という稀な境界ケースを除けば）
+--   以降で例外を送出せず必ず正常なreturnへ到達する。したがって、レート制限
+--   自身がRAISE EXCEPTIONする場合を除き、この位置でのUPSERTは呼び出しの
+--   最終的な成否とロールバックの巻き添えを気にする必要がない。
+--
+-- スコープの意図的な限定とその正当化: この配置では、セッションが実在しない/
+--   closedである、items配列が空である、売り切れ品目を含む、といった
+--   「明らかに無効な呼び出し」はレート制限のカウント対象に含まれない
+--   （前述のPostgreSQLの制約上、技術的に含めることができないため）。
+--   しかしresearch.mdが名指しする具体的リスクは「QRコードのSNS拡散等に
+--   よる大量不正“注文”」であり、これが実際に成立する（厨房へ大量の偽注文が
+--   投入される）ためには、攻撃者は有効なsession_id・有効なmenuItemIdを
+--   使った「妥当な形の送信」を行う必要がある（無効なペイロードだけを
+--   送り続けても、ordersへの書き込みは一切発生せず、design.mdが警戒する
+--   「大量不正注文」は実現しない）。したがって本レート制限は、この具体的な
+--   脅威像に対して直接効果を持つ範囲（妥当な送信試行、同一idempotencyKeyに
+--   よる冪等な重複再送を含む）を対象とすれば要件を満たす。無効なペイロード
+--   のみを大量に送り続けるような、注文の成立を伴わない一般的なDoS挙動は、
+--   本タスクの対象であるアプリケーション層・セッション単位の緩和策の
+--   スコープ外とし、必要であれば別途Vercel/Supabase側のネットワーク層
+--   レート制限で対応すべき領域と整理する。
+--
+-- =========================================================================
+-- 設計判断11（タスク3.5で追加）: 閾値 — 1セッションあたり60秒間に20回
+-- =========================================================================
+-- research.mdの例示「1分あたりの送信回数上限」に従い、ウィンドウは60秒固定
+-- とする。
+--
+-- 閾値20回の根拠（実店舗＝居酒屋を想定した現実的な上限からの見積もり）:
+--   - design.mdのCustomerOrderApp（要件1.12実装ノート）は「同席者の別端末
+--     からの注文にもRealtimeで追随する」ことを明示しており、同一卓の複数人が
+--     各自のスマートフォンから独立にsubmit_orderを呼ぶ運用を正式にサポート
+--     している。研究で想定する卓規模（research.mdの規模感、卓10〜20の
+--     一般的な居酒屋）から、1卓あたりの人数はおおよそ2〜8名程度と見積もる。
+--   - 最も負荷が高い正常系は「全員がほぼ同時に一次の注文を確定する」瞬間で、
+--     8名が60秒以内にそれぞれ1回ずつ送信すれば8回。通信不調によるクライアント
+--     側の再試行（同一idempotencyKeyでの再送は冪等性により重複排除される
+--     が、本レート制限のカウント対象には含む。設計判断9・10参照）を1人
+--     あたり最大2回程度見込んでも、8名×2回=16回程度に収まる。
+--   - この現実的な最大値（16回程度）に対して安全側の余裕を持たせつつ、
+--     攻撃側の実効レートは大きく制限できる値として20回/60秒を採用する。
+--     スクリプトによる連続送信を60秒あたり最大20回（1時間あたり最大1,200回）
+--     に頭打ちさせることは、無制限の送信と比較すれば大幅な削減であり、
+--     要件が求める「緩和」（完全な防止ではなく削減）の水準を満たす。
+--   - 閾値・ウィンドウはsubmit_order関数内のローカル定数として直接埋め込み、
+--     環境変数化・専用設定テーブル化は本タスク（v1のセキュリティ緩和策）の
+--     範囲では過剰と判断する（将来運用調整が必要になった場合の変更点は、
+--     この1関数内の宣言部のみに閉じる）。
+--
+-- SQLSTATE 'P0429': 既存のカスタムSQLSTATE規約（本ファイル冒頭・設計判断5
+--   参照。SQLSTATEクラス'P0'配下で、既存のP0400/P0401/P0403/P0404/P0409/
+--   P0410/P0412と衝突しない未使用のサブコード）を踏襲し、HTTPの
+--   429 Too Many Requestsを想起させる'P0429'を新規に割り当てる。
+
 create or replace function public.submit_order(
   p_session_id uuid,
   p_idempotency_key text,
@@ -324,6 +510,10 @@ declare
   v_items_result jsonb := '[]'::jsonb;
   v_prepared jsonb;
   v_row record;
+  -- タスク3.5で追加（設計判断9・10・11）: セッション単位レート制限用。
+  v_rate_limit_max constant int := 20;
+  v_rate_limit_window constant interval := interval '60 seconds';
+  v_rate_limit_count int;
 begin
   -- 1. セッション有効性の検証（要件1.9）。存在しない場合も'closed'の場合も
   --    区別せずSESSION_NOT_ACTIVEとして拒否する（design.mdのSubmitOrderError
@@ -435,6 +625,79 @@ begin
     );
   end loop;
 
+  -- 3b. セッション単位のレート制限（タスク3.5で追加。設計判断9・10・11参照）。
+  --     3a（品目ループ内のoptionSelections整合性チェック）とは別の、
+  --     ループ終了直後のステップである。
+  --     ここまでにセッションの実在・active状態・全品目の非売り切れ検証を
+  --     通過しており、この呼び出しは（冪等キー重複を除けば）以降で例外を
+  --     送出せず正常にreturnへ到達することがほぼ確定している（設計判断6の
+  --     「実在しないmenuItemId」という稀な例外経路のみが残るが、これは既存の
+  --     設計が既に許容している境界ケースであり本タスクでは特別扱いしない）。
+  --     この位置に置く理由（PL/pgSQLのトランザクション境界に関する制約）:
+  --     RAISE EXCEPTIONが関数外へ伝播すると、その呼び出し全体（1回のRPC
+  --     呼び出し = 1トランザクション）がロールバックされ、直前に行った
+  --     すべての書き込み（本テーブルへのUPSERTを含む）も巻き戻される
+  --     （設計判断6のコメントで述べた「関数全体が呼び出し元と同一の
+  --     トランザクションとして実行される」という既存の記述、および本タスクの
+  --     実装時に実機で確認した挙動）。したがって、もしレート制限のUPSERTを
+  --     ステップ1（セッション有効性検証）の直後に置いた場合、SESSION_NOT_ACTIVE/
+  --     EMPTY_ORDER/ITEM_SOLD_OUTのいずれかで最終的に例外を送出する呼び出しは、
+  --     その手前で行ったレート制限カウンタへの加算も道連れでロールバックされて
+  --     しまい、「無効なペイロードを送り続ける呼び出しをレート制限で絞る」
+  --     ことが実現できない（本関数はPL/pgSQL関数として全てのエラーをRAISE
+  --     EXCEPTIONで通知する既存の規約を採用しており、後続の検証失敗を
+  --     「エラーを返さず握りつぶす」方向に変更することは、design.mdの
+  --     エラーモデル・SubmitOrderError契約・3.1-3.4の既存テストの前提を
+  --     壊すため不採用。自律トランザクション（dblink等の拡張機能を用いて
+  --     カウンタ更新だけを別コネクションで即時コミットする手法）を使えば
+  --     回避できなくはないが、v1のセキュリティ緩和策としては明らかに過剰な
+  --     複雑さであり、Simplification原則に反するため採用しない）。
+  --     そのため本関数は、「セッションが実在しactiveであり、送信された
+  --     items内に売り切れ品目がない、正当な形式の送信試行」をレート制限の
+  --     対象と定義する。research.mdが名指しする脅威は「QRコードのSNS拡散
+  --     等による大量不正“注文”」であり、攻撃者が実害（厨房への大量の
+  --     偽注文投入）を狙う限り、このスコープの試行（新規注文としての成立、
+  --     または同一idempotencyKeyでの重複再送によるdeduplicated応答の両方を
+  --     含む）が実際のカウント対象になる。空配列やSESSION_NOT_ACTIVE等の
+  --     「明らかに無効な呼び出し」を大量に送るだけの行為は、そもそも
+  --     ordersへの書き込みを一切発生させない（設計判断4の全体ロール
+  --     バック方針）ため「大量不正注文」という具体的リスクを実現し得ず、
+  --     本タスクの対象外（必要であれば別途、Vercel/Supabase側のネットワーク
+  --     層レート制限で対応すべき一般的なDoS対策の領域）と整理する。
+  --
+  --     UPSERT（INSERT ... ON CONFLICT DO UPDATE）1文で「ウィンドウ内なら
+  --     件数+1、ウィンドウ外なら1へリセット」を原子的に行うため、同一
+  --     セッションへの同時呼び出し間でも取りこぼし・二重カウントは起こらない
+  --     （ON CONFLICT DO UPDATEの行ロックによる直列化という標準的な
+  --     Postgresの保証）。閾値超過時にRAISE EXCEPTIONする際、この呼び出し
+  --     自身のUPSERTもロールバックされるが、RETURNING句で取得した
+  --     v_rate_limit_countの値（ロールバック前の計算結果）で閾値判定を
+  --     行うため、閾値超過の判定自体はロールバックの影響を受けず、
+  --     ウィンドウ内で20回目を超える呼び出しは以後すべて正しく拒否され
+  --     続ける（テーブルに保存された値は20回目の呼び出し時点で固定される
+  --     形になるが、閾値判定の正しさには影響しない）。
+  insert into public.submit_order_rate_limits as rl (
+    session_id, window_started_at, request_count
+  )
+  values (p_session_id, now(), 1)
+  on conflict (session_id) do update
+  set
+    window_started_at = case
+      when rl.window_started_at <= now() - v_rate_limit_window then now()
+      else rl.window_started_at
+    end,
+    request_count = case
+      when rl.window_started_at <= now() - v_rate_limit_window then 1
+      else rl.request_count + 1
+    end
+  returning request_count into v_rate_limit_count;
+
+  if v_rate_limit_count > v_rate_limit_max then
+    raise exception 'session % exceeded submit_order rate limit (% requests within %)',
+      p_session_id, v_rate_limit_count, v_rate_limit_window
+      using errcode = 'P0429';
+  end if;
+
   -- 4. 冪等性: ordersへのINSERTを試みる。一意制約違反（同一session_id +
   --    idempotency_keyの既存注文）を検知した場合のみ、新規のorder_items挿入を
   --    行わず既存注文を再取得する（設計判断3参照）。idにはgen_random_uuid()を
@@ -545,18 +808,27 @@ $$;
 
 comment on function public.submit_order(uuid, text, jsonb) is
   '客（anonロール、無ログイン）が注文を送信するCustomerOrderingGatewayの
-   書き込み系RPC。対象セッションがactiveであること・各品目が売り切れでないことを
-   サーバー側で再検証し（クライアント表示を信用しない、要件7.2）、いずれかを
-   満たさない場合は何も挿入せずカスタムSQLSTATE ''P0409''（SESSION_NOT_ACTIVE）/
-   ''P0410''（ITEM_SOLD_OUT、DETAILに該当menuItemIdを含む）で例外を送出する。
-   品目が0件の場合は''P0400''（EMPTY_ORDER）。orders(session_id, idempotency_key)
-   の一意制約違反をdeduplicated: trueの成功応答へ変換することで冪等性を実現し
-   （設計判断3）、同一品目でもoptionSelectionsが異なれば別のorder_items行として
-   登録する（要件1.8、設計判断4）。optionSelectionsは品目のoptions定義に存在
-   しないキーを無視し、未指定のオプションはoptions側のdefault値で補ってから
-   options_selectedへ保存する。新規のorder_items.statusは品目のgenreに
-   よらず常に''received''から開始する。SECURITY DEFINER + search_path=''''は
-   get_ordering_context（3.1）と同じsearch_pathなりすまし対策を踏襲する。';
+   書き込み系RPC。対象セッションが実在しactiveであること・各品目が売り切れで
+   ないことをサーバー側で再検証し（クライアント表示を信用しない、要件7.2）、
+   いずれかを満たさない場合は何も挿入せずカスタムSQLSTATE ''P0409''
+   （SESSION_NOT_ACTIVE）/ ''P0410''（ITEM_SOLD_OUT、DETAILに該当menuItemIdを
+   含む）で例外を送出する。品目が0件の場合は''P0400''（EMPTY_ORDER）。
+   加えて、上記の検証（セッション有効性・空配列・売り切れ）をすべて通過した
+   「妥当な送信試行」に対し、ordersへの冪等INSERTの直前でsubmit_order_rate_limits
+   （タスク3.5、設計判断9）によるセッション単位のレート制限を評価し、60秒間に
+   20回を超える呼び出しをカスタムSQLSTATE ''P0429''（RATE_LIMITED）で拒否する。
+   同一idempotencyKeyによる冪等な重複再送もこのカウント対象に含まれる。この
+   評価をactive状態検証等より前に置けなかった理由（RAISE EXCEPTIONがトランザクション
+   全体を巻き戻すため、後続で失敗する呼び出しのカウンタ加算だけを残すことが
+   PostgreSQLの制約上できない）は設計判断10に詳述する。
+   orders(session_id, idempotency_key)の一意制約違反をdeduplicated: trueの
+   成功応答へ変換することで冪等性を実現し（設計判断3）、同一品目でも
+   optionSelectionsが異なれば別のorder_items行として登録する（要件1.8、
+   設計判断4）。optionSelectionsは品目のoptions定義に存在しないキーを無視し、
+   未指定のオプションはoptions側のdefault値で補ってからoptions_selectedへ
+   保存する。新規のorder_items.statusは品目のgenreによらず常に''received''
+   から開始する。SECURITY DEFINER + search_path=''''はget_ordering_context
+   （3.1）と同じsearch_pathなりすまし対策を踏襲する。';
 
 -- =========================================================================
 -- EXECUTE権限: anonのみ（get_ordering_contextと同じ理由。詳細は本ファイル冒頭

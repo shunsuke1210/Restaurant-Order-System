@@ -282,6 +282,17 @@ describe("createCustomerOrderingGateway", () => {
       });
     });
 
+    it("SQLSTATE P0429はRATE_LIMITEDへマッピングされる（観測可能な完了条件、タスク3.5）", async () => {
+      rpc.mockResolvedValueOnce({
+        data: null,
+        error: samplePostgrestError("P0429"),
+      });
+
+      const result = await gateway.submitOrder(baseInput);
+
+      expect(result).toEqual({ ok: false, error: { code: "RATE_LIMITED" } });
+    });
+
     it("マッピングにない未知のSQLSTATEはResultにならず例外として伝播する", async () => {
       rpc.mockResolvedValueOnce({
         data: null,
@@ -409,8 +420,8 @@ function describeSubmitOrderError(errorValue: SubmitOrderError): string {
     case "EMPTY_ORDER":
       return "empty order";
     case "RATE_LIMITED":
-      // RPCはまだこのコードを送出しないが（本ファイル冒頭コメント参照）、
-      // 型としては存在するため呼び出し側は網羅的に処理できなければならない。
+      // タスク3.5でsubmit_order（0003_rpc_customer_gateway.sql）が実際に
+      // このコード（SQLSTATE 'P0429'）を送出するようになった。
       return "rate limited";
     default: {
       const exhaustiveCheck: never = errorValue;

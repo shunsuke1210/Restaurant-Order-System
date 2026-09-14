@@ -69,7 +69,7 @@
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 1.10, 1.12, 2.1, 2.2, 2.3, 7.2_
   - _Depends: 3.1, 3.2, 3.3_
 
-- [ ] 3.5 submit_orderのセッション単位レート制限
+- [x] 3.5 submit_orderのセッション単位レート制限
   - `submit_order`にセッション単位のレート制限（例: 1セッションあたり1分間に一定回数を超える呼び出しを拒否）を追加し、QRコード流出等による大量不正送信を緩和する（design.mdのSecurity Considerations／Risks、research.mdのRisks & Mitigations参照）
   - 新しいエラーコード`RATE_LIMITED`をRPCとTypeScriptラッパーの両方に反映する
   - 観測可能な完了条件: 同一セッションから許容回数を超えて短時間に送信すると`RATE_LIMITED`で拒否され、通常の送信間隔では拒否されない
@@ -289,3 +289,4 @@
 - 1.3でPostgres連携の統合テスト（`pg`クライアント）を追加した結果、`npm test`はローカルSupabaseスタック（`npm run db:start`）が起動していないと失敗する（ECONNREFUSED、フェイルファストで原因は明確）。本プロジェクトはPostgres RPCが中心のためこれは許容し、各タスクの実装者は作業前に`npm run db:start`を実行すること。RPCタスク（3.x/4.x）でテスト本数が増えてきたら、`test:unit`（DB不要・高速）と`test:integration`（DB必須）へのスクリプト分割を検討する。
 - 2.3で判明：`vitest.config.mts`は元々`.env.local`を`process.env`へロードしていなかった（Vite/Vitestの既定動作では`.env.local`は自動ロードされない）。修正済み（`loadEnv`をマージ、シェル/CI環境変数が優先されるよう順序を維持）。この修正前は、統合テストが`process.env.X ?? "<ハードコードされたfallback値>"`という書き方をしていると、実際には常にfallback値でテストしていた（`.env.local`の値と偶然一致していただけ）。**今後、環境変数に依存する新しいテストを書く際は、ハードコードされたfallback値を使わず、値が未設定なら`beforeAll`等で明確なエラーを投げてfail-fastすること**（シークレット的な値の場合は特に、fallbackがgit管理ファイルへの平文漏洩の抜け道になる）。
 - `src/lib/gateways/customerOrderingGateway.ts`（3.4）の各メソッドは、ドキュメント化されたエラーコード以外の予期しないエラー（ネットワーク断等）を`Result`に含めず例外としてthrowする（`src/lib/result.ts`/`useDeviceIdentity.ts`から続く既存の規約）。**そのため6.x（CustomerOrderApp UI）でこのゲートウェイを呼び出す際は、必ずtry/catchで例外を捕捉すること**（Reactのエラーバウンダリはイベントハンドラ内の非同期例外を自動捕捉しないため、素通りすると画面に何も表示されないまま失敗する）。
+- 3.5のレート制限は、PL/pgSQLの1関数呼び出し=1トランザクションという性質上、セッション有効性/売り切れ等の検証で`RAISE EXCEPTION`する呼び出しはカウンタへのUPSERTごとロールバックされ、集計対象にできない（意図的なv1スコープの割り切りとしてレビュー済み・承認済み）。有効なセッション・品目に対する大量送信のみが対象。同一セッションからの`submit_order`はカウンタ行のロックにより直列化されるため、将来1卓あたりの同時注文数が大きく増える場合はレイテンシへの影響を再検討すること。

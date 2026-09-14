@@ -29,17 +29,14 @@ import { type Result, ok, err } from "../result";
  *
  * ## RATE_LIMITEDについて（SubmitOrderError）
  * design.mdのSubmitOrderError型は、タスク3.2のレビューで追加された
- * `{ code: "RATE_LIMITED" }`を含む。セッション単位のレート制限自体は
- * タスク3.5（本タスクの直後に意図的に後続配置）でsubmit_order関数に
- * 実装される予定であり、現時点のRPCはこのSQLSTATEを一切送出しない
- * （0003_rpc_customer_gateway.sqlは変更していない。本ファイル下部の
- * SUBMIT_ORDER_ERROR_MAPPINGにも対応するエントリはまだ存在しない）。
- * それでも型としては現時点からRATE_LIMITEDをユニオンに含めておくことで、
- * 3.5がSQLSTATEを1つ追加するだけでこのラッパーの型定義を変更せずに
- * 済むようにする（design.mdの型定義をそのまま反映するという本タスクの
- * 方針）。呼び出し側の網羅的なswitchは、3.5が着地するまでは到達しない
- * ケースとしてRATE_LIMITEDを扱うことになるが、これは型として妥当であり
- * エラーではない。
+ * `{ code: "RATE_LIMITED" }`を含む。タスク3.5で0003_rpc_customer_gateway.sql
+ * のsubmit_order関数にセッション単位のレート制限（60秒間に20回を超える
+ * 呼び出しを拒否、詳細は同ファイルの設計判断9・10・11参照）が実装され、
+ * 超過時にカスタムSQLSTATE `P0429` を送出するようになった。本ファイル下部の
+ * SUBMIT_ORDER_ERROR_MAPPINGはこのSQLSTATEを`{ code: "RATE_LIMITED" }`へ
+ * マッピングする（追加ペイロードなし。ITEM_SOLD_OUTのようなDETAIL由来の
+ * 追加フィールドはdesign.mdのSubmitOrderError型がRATE_LIMITEDに要求して
+ * いないため）。
  *
  * ## DIファクトリという設計判断（useDeviceIdentity.tsとの違い）
  * useDeviceIdentity.ts（タスク2.3）は、DeviceIdentityProviderの
@@ -179,6 +176,7 @@ const SESSION_NOT_ACTIVE_SQLSTATE = "P0409";
 const EMPTY_ORDER_SQLSTATE = "P0400";
 const ITEM_SOLD_OUT_SQLSTATE = "P0410";
 const CALL_ALREADY_OPEN_SQLSTATE = "P0412";
+const RATE_LIMITED_SQLSTATE = "P0429";
 
 // 設計判断（タスク3.4）: 各マッピング定数には明示的に
 // `PostgrestErrorMapping<E>`型を注釈する。こうすることでオブジェクト
@@ -192,12 +190,12 @@ const GET_ORDERING_CONTEXT_ERROR_MAPPING: PostgrestErrorMapping<OrderingContextE
     [TABLE_NOT_FOUND_SQLSTATE]: () => ({ code: "TABLE_NOT_FOUND" }),
   };
 
-// 設計判断（タスク3.4）: ITEM_SOLD_OUTはerror.details（0003が
-// `using detail = v_menu_item_id::text`で載せるmenu_item_id）から
-// menuItemIdを抽出する。design.mdのSubmitOrderError型がこのフィールドを
-// 要求しているため。RATE_LIMITEDに対応するSQLSTATEはまだ存在しない
-// （ファイル冒頭コメント参照。タスク3.5でSQLSTATEが割り当てられ次第、
-// ここへエントリを追加する想定）。
+// 設計判断（タスク3.4、RATE_LIMITEDのマッピングはタスク3.5で追加）:
+// ITEM_SOLD_OUTはerror.details（0003が`using detail = v_menu_item_id::text`
+// で載せるmenu_item_id）からmenuItemIdを抽出する。design.mdのSubmitOrderError
+// 型がこのフィールドを要求しているため。RATE_LIMITEDはdesign.mdの型定義通り
+// 追加ペイロードを持たない（0003_rpc_customer_gateway.sqlのsubmit_orderが
+// 送出するSQLSTATE 'P0429'、設計判断9・10・11参照）。
 const SUBMIT_ORDER_ERROR_MAPPING: PostgrestErrorMapping<SubmitOrderError> = {
   [SESSION_NOT_ACTIVE_SQLSTATE]: () => ({ code: "SESSION_NOT_ACTIVE" }),
   [EMPTY_ORDER_SQLSTATE]: () => ({ code: "EMPTY_ORDER" }),
@@ -205,6 +203,7 @@ const SUBMIT_ORDER_ERROR_MAPPING: PostgrestErrorMapping<SubmitOrderError> = {
     code: "ITEM_SOLD_OUT",
     menuItemId: error.details,
   }),
+  [RATE_LIMITED_SQLSTATE]: () => ({ code: "RATE_LIMITED" }),
 };
 
 // 設計判断（タスク3.4）: design.mdのCallRequestError型は

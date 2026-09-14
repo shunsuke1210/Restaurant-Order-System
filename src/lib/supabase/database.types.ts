@@ -237,6 +237,32 @@ export type Database = {
         }
         Relationships: []
       }
+      submit_order_rate_limits: {
+        Row: {
+          request_count: number
+          session_id: string
+          window_started_at: string
+        }
+        Insert: {
+          request_count?: number
+          session_id: string
+          window_started_at?: string
+        }
+        Update: {
+          request_count?: number
+          session_id?: string
+          window_started_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "submit_order_rate_limits_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: true
+            referencedRelation: "table_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       table_sessions: {
         Row: {
           closed_at: string | null
