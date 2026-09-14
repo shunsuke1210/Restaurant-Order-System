@@ -57,7 +57,7 @@
   - _Requirements: 1.7, 1.8, 1.9, 1.10, 7.2_
   - _Depends: 3.1_
 
-- [ ] 3.3 create_call_request RPCの実装
+- [x] 3.3 create_call_request RPCの実装
   - セッションに未対応の呼び出しが既に存在する場合は新規作成しないRPCを実装する
   - 観測可能な完了条件: 同一セッションに対して連続して呼び出しても`call_requests`の行が1件のまま増えない
   - _Requirements: 2.1, 2.2, 2.3_

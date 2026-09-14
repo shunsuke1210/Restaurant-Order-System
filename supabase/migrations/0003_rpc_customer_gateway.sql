@@ -1,22 +1,21 @@
 -- 0003_rpc_customer_gateway.sql
 -- table-order-kitchen: CustomerOrderingGateway RPC群
 --
--- Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.12, 7.2
+-- Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.12, 2.1, 2.2, 2.3, 7.2
 -- Design: .kiro/specs/table-order-kitchen/design.md の
 --   "CustomerOrderingGateway" コンポーネント（Responsibilities & Constraints,
 --   Service Interface: getOrderingContext / GetOrderingContextInput /
---   OrderingContext / MenuItemView / MenuItemOption / OrderingContextError）と、
---   「注文送信〜厨房反映フロー」シーケンス図の Key Decisions
---   「get_ordering_contextとsubmit_orderを分離することで、注文送信の直前に
---   必ずセッション有効性を再検証する」を参照。
+--   OrderingContext / MenuItemView / MenuItemOption / OrderingContextError /
+--   submitOrder / createCallRequest 一式）と、「注文送信〜厨房反映フロー」
+--   シーケンス図の Key Decisions「get_ordering_contextとsubmit_orderを
+--   分離することで、注文送信の直前に必ずセッション有効性を再検証する」を参照。
 --
--- ファイル構成（design.md "File Structure Plan"）: 本ファイルは将来、
---   get_ordering_context / submit_order / create_call_request の3関数を
---   まとめて持つ想定（CustomerOrderingGatewayという単一の書き込み境界を
---   1マイグレーションファイルにまとめる設計判断）。
---   本タスク（3.1）はget_ordering_context単体のみを実装する。
---   submit_order（3.2）/create_call_request（3.3）は将来タスクで
---   本ファイルへ追記される（別ファイルへの分割はしない）。
+-- ファイル構成（design.md "File Structure Plan"）: 本ファイルは
+--   get_ordering_context（3.1）/ submit_order（3.2）/ create_call_request（3.3）
+--   の3関数をまとめて持つ（CustomerOrderingGatewayという単一の書き込み境界を
+--   1マイグレーションファイルにまとめる設計判断）。3.3の完了により
+--   CustomerOrderingGatewayのRPC層は本ファイルで完結する
+--   （別ファイルへの分割はしない）。
 --
 -- マイグレーション適用順序についての注記: ファイル名の字句/数値順で
 --   0001 -> 0002 -> 0003 -> 0005 -> 0006 -> 0007 の順に適用される
@@ -568,3 +567,186 @@ revoke execute on function public.submit_order(uuid, text, jsonb)
   from public, anon, authenticated;
 
 grant execute on function public.submit_order(uuid, text, jsonb) to anon;
+
+-- =========================================================================
+-- タスク3.3: create_call_request RPC
+-- =========================================================================
+-- Requirements: 2.1, 2.2, 2.3
+-- Design: design.mdの CustomerOrderingGateway コンポーネント（Responsibilities &
+--   Constraints「呼び出し要求は同一セッションに未対応（open）のものがある場合、
+--   新規作成しない（要件2.3）」、Service Interface: createCallRequest /
+--   CreateCallRequestInput / CallRequest / CallRequestError）を参照。
+--   get_ordering_context（3.1）・submit_order（3.2）と同じCustomerOrderingGateway
+--   境界に属するため、ファイル冒頭のFile Structure Plan通り本ファイルへ追記する
+--   （別ファイルへは分割しない）。
+
+-- =========================================================================
+-- 設計判断7: 未対応(open)呼び出しの重複防止をDBレベルの部分ユニークインデックス
+--   で強制する（0001_schema.sqlのtable_sessions_active_table_id_keyと同じ着想）
+-- =========================================================================
+-- 0001_schema.sqlのcall_requestsテーブルには、要件4.1のtable_sessionsに相当する
+-- 「セッションあたり未対応(open)の呼び出しは高々1件」という部分ユニーク制約が
+-- まだ存在しない（1.3時点ではcreate_call_requestの実装がまだなく不要だった）。
+-- submit_orderの冪等性（設計判断3、orders(session_id, idempotency_key)の
+-- 一意制約）と同様に、「アプリケーション側のSELECTでの事前チェックだけに頼ると、
+-- 2つの呼び出しがほぼ同時に到着した場合に両方がSELECT時点で『まだ無い』と
+-- 判定してしまい、call_requestsの行が2件生成される」という競合状態が
+-- 理論上あり得る。design.mdのtable_sessions Concurrency strategy
+-- 「後着の呼び出しは一意制約違反を検知して処理する」という既存の設計方針を
+-- そのまま踏襲し、DBレベルで「セッションあたり未対応の呼び出しは高々1件」を
+-- 構造的に強制する部分ユニークインデックスをここで新設する（0001は既に
+-- 適用済み・コミット済みのため変更せず、本タスクの境界である本ファイルに
+-- 追加する。1.3のtable_sessions_active_table_id_keyと全く同じパターン）。
+create unique index call_requests_open_session_id_key
+  on public.call_requests (session_id)
+  where status = 'open';
+
+-- =========================================================================
+-- 設計判断8: エラーコード — SESSION_NOT_ACTIVEはsubmit_order（3.2）の'P0409'を
+--   再利用し、CALL_ALREADY_OPENには新規に'P0412'を割り当てる
+-- =========================================================================
+-- SESSION_NOT_ACTIVE: design.mdのSubmitOrderErrorとCallRequestErrorは、
+--   どちらも全く同じ形状{ code: "SESSION_NOT_ACTIVE" }を持つ（「対象セッションが
+--   activeでない」という同一の意味）。0003ファイル冒頭の設計判断5でP0409を
+--   「対象セッションが期待するactive状態と矛盾する」という意味に割り当て済みで
+--   あり、この意味はRPC関数をまたいでも変わらない。将来のTypeScript
+--   ラッパー（3.4）やUI層のエラーハンドラは、どのRPCから返ってきたかに
+--   関わらずSESSION_NOT_ACTIVEを常に同じSQLSTATEとして判別できる方が
+--   一貫性があり、呼び出し元ごとに異なるコードを新設する理由もない。
+--   （比較として0007のP0401は、同一関数内で意味の異なる2ケース
+--   （未認証セッション／セットアップコード不一致）に使い回されており、
+--   これは「異なる意味に同じコードを使う」という好ましくない例である。
+--   本タスクの判断はそれとは逆に「同一の意味に同一のコードを使う」という
+--   一貫した使い方であり、0006/0007のいずれもコードを意味の面で
+--   RPCをまたいで共有する前例は無いが、本タスクではsubmit_orderと
+--   create_call_requestが design.md 上で全く同一のエラー型を共有している
+--   という強い根拠があるため、既存コードの再利用を選択する。）
+--
+-- CALL_ALREADY_OPEN: 一方、design.mdのCallRequestErrorはSubmitOrderErrorには
+--   存在しない{ code: "CALL_ALREADY_OPEN" }という専用の型を明示的に定義して
+--   おり、これはsubmit_orderの冪等性パターン（同一idempotencyKeyでの再送を
+--   deduplicated: trueという「成功」応答に変換する。SubmitOrderResultの
+--   Postconditionとして明記）とは意図的に異なる設計であることを示唆する。
+--   submit_orderにはこのケース専用のエラーコードが存在しない（常に成功として
+--   deduplicated: trueを返す）のに対し、create_call_requestの型シグネチャは
+--   はっきりと専用のエラー共用体メンバーを持つ。要件2.3の文言「重複した
+--   呼び出し通知を新たに作成しない」自体はエラー/成功いずれの応答形式も
+--   排除していないが、design.mdの型定義がここまで明示的にCALL_ALREADY_OPENを
+--   規定している以上、その設計文書に最も忠実な解釈はエラー応答として実装する
+--   ことだと判断した（本タスクのタスク文書が示す判断基準と同じ理由）。
+--   将来のUIタスク（6.3、呼び出しボタンUI）は、このエラーを「対応済みになる
+--   まで再送不可を示す」というソフトな状態表示に変換すればよく、致命的な
+--   失敗として扱う必要はない。
+--   新規に'P0412'（HTTPの412 Precondition Failedを想起させる数字）を割り当てる。
+--   「未対応の呼び出しが存在しないこと」という、新規作成が成立するための
+--   暗黙の前提条件が満たされていない、という意味的な対応が取れるため。
+--   既存のP0400/P0401/P0403/P0404/P0409/P0410とは衝突しない未使用の
+--   サブコードである。design.mdのCallRequestError型は該当する既存の
+--   呼び出し（call_requests.id）をDETAIL句に載せ、将来のTypeScript
+--   ラッパー・UI層が追加の問い合わせなしに既存の呼び出しを参照できるように
+--   する（submit_orderのITEM_SOLD_OUTがDETAILにmenu_item_idを載せる
+--   パターンをそのまま踏襲）。
+
+create or replace function public.create_call_request(p_session_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_session_status text;
+  v_existing_call_id uuid;
+  v_call_id uuid;
+  v_created_at timestamptz;
+begin
+  -- 1. セッション有効性の検証。submit_order（3.2）と全く同じ理由・同じ
+  --    'P0409'で、存在しない場合も'closed'の場合も区別せず拒否する
+  --    （design.mdのPreconditions「submitOrder/createCallRequestは対象
+  --    sessionIdが実在すること」を、実在しない場合も含めてこの単一の
+  --    エラーコードで表現する）。
+  select status
+    into v_session_status
+    from public.table_sessions
+    where id = p_session_id;
+
+  if not found or v_session_status <> 'active' then
+    raise exception 'session % is not active', p_session_id
+      using errcode = 'P0409';
+  end if;
+
+  -- 2. 重複防止の事前チェック（要件2.3）。通常の逐次呼び出し（客が呼び出し
+  --    ボタンを連打する等）では、この時点でのSELECTだけで十分に重複を
+  --    検知できる。真に同時到着した場合の競合は、後段のINSERTが
+  --    call_requests_open_session_id_key（設計判断7）の一意制約違反を
+  --    検知することで最終的に防止される（3.のexceptionブロック）。
+  select id
+    into v_existing_call_id
+    from public.call_requests
+    where session_id = p_session_id
+      and status = 'open';
+
+  if v_existing_call_id is not null then
+    raise exception 'an open call request already exists for session %', p_session_id
+      using errcode = 'P0412', detail = v_existing_call_id::text;
+  end if;
+
+  -- 3. 新規呼び出しの作成。call_requests_open_session_id_key（設計判断7）が
+  --    真に同時到着した場合の最終防衛線となる。unique_violationを捕捉した
+  --    場合は、submit_orderの冪等性パターン（deduplicated: trueへの変換）とは
+  --    異なり成功へフォールバックせず、勝者側の既存行を再取得した上で
+  --    上記2と同じCALL_ALREADY_OPENエラーへ変換する（設計判断8参照。
+  --    本関数はこの一意制約とその意味上の帰結の両方に責任を持つ）。
+  begin
+    insert into public.call_requests (session_id, status)
+    values (p_session_id, 'open')
+    returning id, created_at into v_call_id, v_created_at;
+  exception
+    when unique_violation then
+      select id
+        into v_existing_call_id
+        from public.call_requests
+        where session_id = p_session_id
+          and status = 'open';
+
+      raise exception 'an open call request already exists for session %', p_session_id
+        using errcode = 'P0412', detail = v_existing_call_id::text;
+  end;
+
+  return jsonb_build_object(
+    'id', v_call_id,
+    'sessionId', p_session_id,
+    'status', 'open',
+    'createdAt', v_created_at
+  );
+end;
+$$;
+
+comment on function public.create_call_request(uuid) is
+  '客（anonロール、無ログイン）が呼び出しボタンを押した際に呼び出す
+   CustomerOrderingGatewayの書き込み系RPC。対象セッションがactiveであることを
+   サーバー側で再検証し、満たさない場合はカスタムSQLSTATE ''P0409''
+   （SESSION_NOT_ACTIVE、submit_orderと同一の意味で同一コードを再利用。
+   設計判断8参照）で例外を送出する。同一セッションに未対応(open)の呼び出しが
+   既にある場合は新規行を作らずカスタムSQLSTATE ''P0412''（CALL_ALREADY_OPEN、
+   design.mdのCallRequestError型に対応。DETAILに既存のcall_requests.idを含む）
+   で拒否する（要件2.3）。この重複防止はcall_requests_open_session_id_key
+   （セッションあたり未対応の呼び出しは高々1件という部分ユニークインデックス、
+   設計判断7）によってDBレベルでも強制されるため、真に同時到着したリクエスト
+   同士の競合でも2件目の行が生成されることはない。成功時はdesign.mdのCallRequest
+   型と同じキー構成（id/sessionId/status/createdAt、statusは常に''open''）の
+   jsonbを返す。resolved（対応済み）にする操作（StaffOperationsGateway.
+   resolveCallRequest、タスク4.4）は本関数のスコープ外であり、resolved後の
+   セッションへの新規呼び出しはここでの重複防止の対象外として通常どおり
+   成功する。SECURITY DEFINER + search_path=''''はget_ordering_context（3.1）・
+   submit_order（3.2）と同じsearch_pathなりすまし対策を踏襲する。';
+
+-- =========================================================================
+-- EXECUTE権限: anonのみ（get_ordering_context/submit_orderと同じ理由。詳細は
+-- 本ファイル冒頭のget_ordering_context用EXECUTE権限コメントを参照。客側の
+-- 真の匿名anon経路専用であり、authenticated（厨房/レジタブレット）には
+-- 付与しない）
+-- =========================================================================
+revoke execute on function public.create_call_request(uuid)
+  from public, anon, authenticated;
+
+grant execute on function public.create_call_request(uuid) to anon;
