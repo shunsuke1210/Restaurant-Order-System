@@ -1,6 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import MenuScreen from "./MenuScreen";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import MenuScreen, { CONFIRMED_TOTAL_POLL_INTERVAL_MS } from "./MenuScreen";
 import type { MenuItemView } from "@/lib/gateways/customerOrderingGateway";
 
 // MenuScreen（タスク6.1）のコンポーネントテスト。
@@ -13,15 +19,21 @@ import type { MenuItemView } from "@/lib/gateways/customerOrderingGateway";
 // customerOrderingGatewayはモックし、実DBには接続しない
 // （src/app/setup/[role]/SetupForm.test.tsxと同じ方針）。
 //
-// Requirements: 1.2, 1.3, 1.4, 1.5, 1.6, 7.2
+// タスク6.2（注文送信・確定注文合計表示・通信断ハンドリング）のテストも
+// 本ファイルへ追記する（6.1同様、GenreTabs/MenuItemCard/OptionSelectionPanel/
+// CartPanel/ConfirmedTotalBarはいずれも専用のtestファイルを持たず、
+// MenuScreen経由で検証する既存方針を踏襲する）。
+//
+// Requirements: 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 1.10, 1.11, 1.12, 7.2
 
 const mockGetOrderingContext = vi.fn();
+const mockSubmitOrder = vi.fn();
 
 vi.mock("@/lib/gateways/customerOrderingGateway", () => ({
   createCustomerOrderingGateway: () => ({
     getOrderingContext: (...args: unknown[]) =>
       mockGetOrderingContext(...args),
-    submitOrder: vi.fn(),
+    submitOrder: (...args: unknown[]) => mockSubmitOrder(...args),
     createCallRequest: vi.fn(),
   }),
 }));
@@ -82,13 +94,16 @@ const baseMenu: MenuItemView[] = [
   },
 ];
 
-function okContext(menu: MenuItemView[] = baseMenu) {
+function okContext(
+  menu: MenuItemView[] = baseMenu,
+  confirmedTotal = 0,
+) {
   return {
     ok: true as const,
     value: {
       table: { id: "table-1", label: "1番卓" },
       activeSession: { id: "session-1" },
-      confirmedTotal: 0,
+      confirmedTotal,
       menu,
     },
   };
@@ -97,6 +112,7 @@ function okContext(menu: MenuItemView[] = baseMenu) {
 describe("MenuScreen", () => {
   beforeEach(() => {
     mockGetOrderingContext.mockReset();
+    mockSubmitOrder.mockReset();
   });
 
   it("成功応答からメニュー（品目名・価格・写真）を描画する", async () => {
@@ -265,6 +281,315 @@ describe("MenuScreen", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "予期しないエラー",
+    );
+  });
+});
+
+// =========================================================================
+// タスク6.2: 注文送信・確定注文合計表示・通信断ハンドリング
+// Requirements: 1.7, 1.8, 1.9, 1.10, 1.11, 1.12
+// =========================================================================
+
+/** 唐揚げ（オプションなし）をカートへ1点追加する共通手順。 */
+async function addKaraageToCart() {
+  fireEvent.click(await screen.findByRole("button", { name: /唐揚げ/ }));
+  await screen.findByRole("dialog");
+  fireEvent.click(screen.getByRole("button", { name: "選択を確定" }));
+}
+
+/** カートを開いて注文カートダイアログを表示する共通手順。 */
+async function openCartPanel() {
+  fireEvent.click(screen.getByTestId("cart-count"));
+  return screen.findByRole("dialog", { name: "注文カート" });
+}
+
+describe("MenuScreen（タスク6.2: 注文送信・確定注文合計表示・通信断ハンドリング）", () => {
+  beforeEach(() => {
+    mockGetOrderingContext.mockReset();
+    mockSubmitOrder.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("確定注文合計がgetOrderingContextのconfirmedTotalから画面下部に常時表示される", async () => {
+    mockGetOrderingContext.mockResolvedValue(okContext(baseMenu, 1500));
+
+    render(<MenuScreen tableId="table-1" />);
+    await screen.findByText("唐揚げ");
+
+    expect(screen.getByTestId("confirmed-total-amount")).toHaveTextContent(
+      "¥1,500",
+    );
+  });
+
+  it("注文送信が成功すると送信完了メッセージが表示され、カートがクリアされる（観測可能な完了条件a）", async () => {
+    mockGetOrderingContext.mockResolvedValue(okContext());
+    mockSubmitOrder.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        deduplicated: false,
+        order: {
+          id: "order-1",
+          createdAt: "2026-09-15T12:00:00Z",
+          items: [],
+        },
+      },
+    });
+
+    render(<MenuScreen tableId="table-1" />);
+    await addKaraageToCart();
+    expect(screen.getByTestId("cart-count")).toHaveTextContent("1");
+
+    await openCartPanel();
+    fireEvent.click(screen.getByRole("button", { name: "注文する" }));
+
+    expect(await screen.findByText("送信完了")).toBeInTheDocument();
+
+    expect(mockSubmitOrder).toHaveBeenCalledTimes(1);
+    const call = mockSubmitOrder.mock.calls[0][0];
+    expect(call.sessionId).toBe("session-1");
+    expect(call.items).toEqual([
+      {
+        menuItemId: "item-food-1",
+        quantity: 1,
+        optionSelections: {},
+        note: null,
+      },
+    ]);
+    expect(typeof call.idempotencyKey).toBe("string");
+    expect(call.idempotencyKey.length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "閉じる" }));
+    expect(screen.getByTestId("cart-count")).toHaveTextContent("0");
+  });
+
+  it("SESSION_NOT_ACTIVEは専用のメッセージを表示する", async () => {
+    mockGetOrderingContext.mockResolvedValue(okContext());
+    mockSubmitOrder.mockResolvedValueOnce({
+      ok: false,
+      error: { code: "SESSION_NOT_ACTIVE" },
+    });
+
+    render(<MenuScreen tableId="table-1" />);
+    await addKaraageToCart();
+    await openCartPanel();
+    fireEvent.click(screen.getByRole("button", { name: "注文する" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /終了|スタッフ/,
+    );
+  });
+
+  it("ITEM_SOLD_OUTは対象品目名を含む専用のメッセージを表示する", async () => {
+    mockGetOrderingContext.mockResolvedValue(okContext());
+    mockSubmitOrder.mockResolvedValueOnce({
+      ok: false,
+      error: { code: "ITEM_SOLD_OUT", menuItemId: "item-food-1" },
+    });
+
+    render(<MenuScreen tableId="table-1" />);
+    await addKaraageToCart();
+    await openCartPanel();
+    fireEvent.click(screen.getByRole("button", { name: "注文する" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("唐揚げ");
+    expect(alert).toHaveTextContent("売り切れ");
+  });
+
+  it("EMPTY_ORDERは専用のメッセージを表示する", async () => {
+    mockGetOrderingContext.mockResolvedValue(okContext());
+    mockSubmitOrder.mockResolvedValueOnce({
+      ok: false,
+      error: { code: "EMPTY_ORDER" },
+    });
+
+    render(<MenuScreen tableId="table-1" />);
+    await addKaraageToCart();
+    await openCartPanel();
+    fireEvent.click(screen.getByRole("button", { name: "注文する" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /品目を選択/,
+    );
+  });
+
+  it("RATE_LIMITEDは専用のメッセージを表示する", async () => {
+    mockGetOrderingContext.mockResolvedValue(okContext());
+    mockSubmitOrder.mockResolvedValueOnce({
+      ok: false,
+      error: { code: "RATE_LIMITED" },
+    });
+
+    render(<MenuScreen tableId="table-1" />);
+    await addKaraageToCart();
+    await openCartPanel();
+    fireEvent.click(screen.getByRole("button", { name: "注文する" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /時間をおいて|集中/,
+    );
+  });
+
+  it("4種のSubmitOrderErrorはそれぞれ異なる文言を表示する（一律の汎用文言ではない）", async () => {
+    mockGetOrderingContext.mockResolvedValue(okContext());
+    mockSubmitOrder
+      .mockResolvedValueOnce({
+        ok: false,
+        error: { code: "SESSION_NOT_ACTIVE" },
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        error: { code: "ITEM_SOLD_OUT", menuItemId: "item-food-1" },
+      })
+      .mockResolvedValueOnce({ ok: false, error: { code: "EMPTY_ORDER" } })
+      .mockResolvedValueOnce({ ok: false, error: { code: "RATE_LIMITED" } });
+
+    const messages: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      const { unmount } = render(<MenuScreen tableId="table-1" />);
+      await addKaraageToCart();
+      await openCartPanel();
+      fireEvent.click(screen.getByRole("button", { name: "注文する" }));
+      const alert = await screen.findByRole("alert");
+      messages.push(alert.textContent ?? "");
+      unmount();
+    }
+
+    expect(new Set(messages).size).toBe(4);
+  });
+
+  it("送信中にネットワーク接続が失われると送信未完了の旨を表示し、再試行は同一のidempotencyKeyで送信する（観測可能な完了条件c）", async () => {
+    mockGetOrderingContext.mockResolvedValue(okContext());
+    mockSubmitOrder.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+
+    render(<MenuScreen tableId="table-1" />);
+    await addKaraageToCart();
+    await openCartPanel();
+    fireEvent.click(screen.getByRole("button", { name: "注文する" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /完了していません|ネットワーク/,
+    );
+
+    mockSubmitOrder.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        deduplicated: false,
+        order: { id: "order-1", createdAt: "2026-09-15T12:00:00Z", items: [] },
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "再試行" }));
+
+    expect(await screen.findByText("送信完了")).toBeInTheDocument();
+
+    expect(mockSubmitOrder).toHaveBeenCalledTimes(2);
+    const firstKey = mockSubmitOrder.mock.calls[0][0].idempotencyKey;
+    const secondKey = mockSubmitOrder.mock.calls[1][0].idempotencyKey;
+    expect(secondKey).toBe(firstKey);
+  });
+
+  it("送信失敗後にカートへ品目を追加してから再送信すると、新しい冥等性キーで送信され、追加前後の全品目が欠落なく送信される（独立レビューで発見されたバグの再現テスト）", async () => {
+    // レビューで発見されたバグの再現手順:
+    // 1. 唐揚げのみをカートに入れて送信 → ネットワーク断で「未完了」と表示される。
+    // 2. 客は「未完了だ」と誤認し、カートにレモンサワーを追加する
+    //    （カートは[唐揚げ, レモンサワー]になる）。
+    // 3. 再試行すると、修正前の実装は1回目と同じidempotencyKeyを使い回して
+    //    しまい、submit_order RPCの(session_id, idempotency_key)重複排除に
+    //    より2回目のRPC呼び出し自体が「1回目と同じ送信」とみなされる
+    //    （0003_rpc_customer_gateway.sqlはitemsの中身までは比較しない）。
+    //    その結果レモンサワーは一切サーバーへ送信されないのに、UIは
+    //    「送信完了」を表示してしまう（サイレントなデータ消失）。
+    // 本テストは、修正後は2回目の送信が「新しい」idempotencyKeyを使い、
+    // 追加前後の全品目（唐揚げ・レモンサワー両方）を実際にRPC呼び出しの
+    // 引数として送信することを検証する（＝修正前は失敗し、修正後に
+    // 通過するレグレッションテスト）。
+    mockGetOrderingContext.mockResolvedValue(okContext());
+    mockSubmitOrder.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+
+    render(<MenuScreen tableId="table-1" />);
+    await addKaraageToCart();
+    await openCartPanel();
+    fireEvent.click(screen.getByRole("button", { name: "注文する" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /完了していません|ネットワーク/,
+    );
+
+    // カート内容(唐揚げ)は送信失敗によって破棄されない
+    // （冥等性キーの破棄とカートのクリアは別の関心事、という規約の確認）。
+    fireEvent.click(screen.getByRole("button", { name: "閉じる" }));
+    expect(screen.getByTestId("cart-count")).toHaveTextContent("1");
+
+    // 「未完了だ」と誤認した客がレモンサワーを追加する。
+    fireEvent.click(screen.getByRole("button", { name: /レモンサワー/ }));
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "選択を確定" }));
+    expect(screen.getByTestId("cart-count")).toHaveTextContent("2");
+
+    mockSubmitOrder.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        deduplicated: false,
+        order: {
+          id: "order-2",
+          createdAt: "2026-09-15T12:00:05Z",
+          items: [],
+        },
+      },
+    });
+
+    await openCartPanel();
+    fireEvent.click(screen.getByRole("button", { name: "注文する" }));
+
+    expect(await screen.findByText("送信完了")).toBeInTheDocument();
+
+    expect(mockSubmitOrder).toHaveBeenCalledTimes(2);
+    const firstCall = mockSubmitOrder.mock.calls[0][0];
+    const secondCall = mockSubmitOrder.mock.calls[1][0];
+
+    // 核心のアサーション: カート内容が変わった後の再送信は、1回目の
+    // 送信試行と同じidempotencyKeyを使い回してはならない。
+    expect(secondCall.idempotencyKey).not.toBe(firstCall.idempotencyKey);
+
+    // 2回目の送信には、追加前(唐揚げ)・追加後(レモンサワー)の両方の品目が
+    // 含まれていなければならない（品目のサイレントロス防止）。
+    const submittedMenuItemIds = (
+      secondCall.items as ReadonlyArray<{ menuItemId: string }>
+    )
+      .map((item) => item.menuItemId)
+      .sort();
+    expect(submittedMenuItemIds).toEqual(
+      ["item-drink-1", "item-food-1"].sort(),
+    );
+  });
+
+  it("別端末からの注文後、確定注文合計表示が再読み込みなしに更新される（観測可能な完了条件b・ポーリング）", async () => {
+    vi.useFakeTimers();
+    mockGetOrderingContext.mockResolvedValueOnce(okContext(baseMenu, 0));
+
+    render(<MenuScreen tableId="table-1" />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("confirmed-total-amount")).toHaveTextContent(
+      "¥0",
+    );
+
+    // 別端末が注文を送信し、confirmedTotalが更新されたことを模す。
+    mockGetOrderingContext.mockResolvedValueOnce(okContext(baseMenu, 2400));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(CONFIRMED_TOTAL_POLL_INTERVAL_MS);
+    });
+
+    expect(mockGetOrderingContext).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("confirmed-total-amount")).toHaveTextContent(
+      "¥2,400",
     );
   });
 });

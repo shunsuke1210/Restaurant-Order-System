@@ -243,6 +243,48 @@ describe("customerOrderingGateway（結合テスト、実RPCへの疎通確認�
     });
   });
 
+  it(
+    "複数端末シミュレーション: 別のゲートウェイインスタンス（＝別端末を模す）から" +
+      "getOrderingContextを呼び直すと、他方が送信した注文の金額が反映される" +
+      "（要件1.12。タスク6.2のCustomerOrderApp確定注文合計ライブ更新はRealtime" +
+      "ではなくgetOrderingContextのポーリング方式を採用しており、その前提——" +
+      "『サーバー側は常に最新のconfirmedTotalを返す・特別な同期は不要』——を" +
+      "実RPCに対して検証する)",
+    async () => {
+      // 匿名クライアントのセッションは共有されないため、`newGateway()`を
+      // 2回呼び分けるだけで「同一卓に対する別々の匿名デバイス」を
+      // 十分にシミュレートできる（customerOrderingGatewayはState契約を
+      // 持たない純粋なDIファクトリのため、クライアントを分ければ独立した
+      // 呼び出し元として振る舞う）。
+      const deviceA = newGateway();
+      const deviceB = newGateway();
+
+      const before = await deviceB.getOrderingContext({
+        tableId: tableActiveId,
+      });
+      expect(before.ok).toBe(true);
+      if (!before.ok) return;
+      const baseline = before.value.confirmedTotal;
+
+      const submitResult = await deviceA.submitOrder({
+        sessionId: activeSessionId,
+        idempotencyKey: `wrapper-multidevice-${randomUUID()}`,
+        items: [{ menuItemId, quantity: 3, optionSelections: {}, note: null }],
+      });
+      expect(submitResult.ok).toBe(true);
+      if (!submitResult.ok) return;
+      createdOrderIds.push(submitResult.value.order.id);
+
+      const after = await deviceB.getOrderingContext({
+        tableId: tableActiveId,
+      });
+      expect(after.ok).toBe(true);
+      if (!after.ok) return;
+      // Wrapper Item（600円） x 3 = 1800円がdeviceA発の送信によって加算される。
+      expect(after.value.confirmedTotal).toBe(baseline + 600 * 3);
+    },
+  );
+
   it("createCallRequest: 実RPCの応答をCallRequest型として正しく整形する（幸せな経路）", async () => {
     const gateway = newGateway();
     const result = await gateway.createCallRequest({

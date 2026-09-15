@@ -596,7 +596,7 @@ type DeviceProvisioningError = { code: "INVALID_SETUP_CODE" } | { code: "NOT_PRO
 
 ##### Event Contract
 - Published events: `order_items`テーブルおよび`call_requests`テーブルへのINSERT/UPDATE（Supabase `postgres_changes`）
-- Subscribed events: KitchenBoardは店舗全体の`order_items`の変更を（フード/ドリンク/売り切れの3タブはこの単一購読をクライアント側でジャンル別に絞り込んで表示する）、RegisterConsoleは`order_items`/`table_sessions`/`call_requests`の変更を、CustomerOrderApp（P1）は自身の来店セッションに限定した`order_items`の変更を確定注文合計の再計算のために購読する
+- Subscribed events: KitchenBoardは店舗全体の`order_items`の変更を（フード/ドリンク/売り切れの3タブはこの単一購読をクライアント側でジャンル別に絞り込んで表示する）、RegisterConsoleは`order_items`/`table_sessions`/`call_requests`の変更を購読する。CustomerOrderAppは`order_items`のRealtime購読を行わない（タスク6.2で確定。`anon`に`order_items`へのSELECTを許可しないという0008マイグレーションの判断と両立しないため）。確定注文合計のライブ更新は代わりに`getOrderingContext`の定期ポーリング（5秒間隔）で実現する。
 - Ordering / delivery guarantees: Supabase Realtimeは配信順序を保証しないため、UI側は受信データの`updated_at`で最新状態を再構成する。切断検知時は`listKitchenFeed`/`listRegisterFeed`（またはCustomerOrderApp側は`getOrderingContext`）を再実行して復旧する（要件6.9）
 
 **Implementation Notes**
@@ -606,7 +606,7 @@ type DeviceProvisioningError = { code: "INVALID_SETUP_CODE" } | { code: "NOT_PRO
 ### Presentation Layer（summary only）
 
 #### CustomerOrderApp
-客の卓側QR注文画面。`CustomerOrderingGateway`のみに依存し、新たな責務境界は導入しない。すべて/一品/フード/ドリンクのジャンル別タブ（`menu_items.genre`の値域に基づく。「おすすめ」相当の独立した分類列は現状のデータモデルにないため実装しない）と、品目の写真・オプション選択UIを提供する。画面下部に確定注文合計を常時表示し、同席者の別端末からの注文にもRealtimeで追随する（要件1.12）。ネットワーク断時は送信失敗を明示し再試行を促す（要件1.11）。
+客の卓側QR注文画面。`CustomerOrderingGateway`のみに依存し、新たな責務境界は導入しない。すべて/一品/フード/ドリンクのジャンル別タブ（`menu_items.genre`の値域に基づく。「おすすめ」相当の独立した分類列は現状のデータモデルにないため実装しない）と、品目の写真・オプション選択UIを提供する。画面下部に確定注文合計を常時表示し、同席者の別端末からの注文にも追随して更新する（要件1.12）。更新方式は`getOrderingContext`の定期ポーリング（5秒間隔）であり、Realtimeの`postgres_changes`購読は用いない（タスク6.2で確定。理由: `anon`ロールへの`order_items`等のSELECT権限拡大を避けるため。詳細は`0008_realtime_publication.sql`および`MenuScreen.tsx`冒頭コメント参照）。ネットワーク断時は送信失敗を明示し再試行を促す（要件1.11）。
 
 #### KitchenBoard
 厨房画面。`StaffOperationsGateway`と`RealtimeFeed`に依存し、フードボード／ドリンクボード／売り切れボードの3タブを1台のタブレットで切り替える構成とする。各ボードは卓・受注時刻が識別できる一覧表示とジャンルに応じたステータス更新UIを提供し、フードボードの未対応列は一品ジャンルを優先表示し（要件6.7、6.8）、調理完了列は直近に完了したものを上部に表示する（要件6.10）。売り切れの登録・解除操作は実行前に確認ダイアログを表示し、確認後にのみ`setSoldOut`を呼び出す（要件7.1, 7.3）。
