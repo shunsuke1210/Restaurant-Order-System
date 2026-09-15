@@ -100,12 +100,16 @@ function okContext(
   menu: MenuItemView[] = baseMenu,
   confirmedTotal = 0,
   hasOpenCallRequest = false,
+  // タスク6.4のレビュー修正で追加: セッション識別子変化の検知（要件4.4）を
+  // テストするため、activeSession.idを差し替え可能にする。デフォルトは
+  // 既存の全テストとの互換性のため"session-1"のまま維持する。
+  sessionId = "session-1",
 ) {
   return {
     ok: true as const,
     value: {
       table: { id: "table-1", label: "1番卓" },
-      activeSession: { id: "session-1" },
+      activeSession: { id: sessionId },
       confirmedTotal,
       hasOpenCallRequest,
       menu,
@@ -263,7 +267,11 @@ describe("MenuScreen", () => {
     await waitFor(() => {
       expect(screen.queryByText("唐揚げ")).not.toBeInTheDocument();
     });
-    expect(screen.getByText(/スタッフ|店員/)).toBeInTheDocument();
+    // タスク6.4でNoActiveSessionScreen（見出し・本文の両方に案内文言を
+    // 持つ）へ置き換わったため、/スタッフ|店員/は複数要素にマッチしうる
+    // （getAllByTextで存在のみを確認する。詳細な文言検証はタスク6.4の
+    // 専用describeブロックで行う）。
+    expect(screen.getAllByText(/スタッフ|店員/).length).toBeGreaterThan(0);
   });
 
   it("TABLE_NOT_FOUNDエラーはクラッシュせず、エラーメッセージを表示する", async () => {
@@ -894,6 +902,387 @@ describe("MenuScreen（タスク6.3: 呼び出しボタンUI）", () => {
       expect(
         screen.getByRole("button", { name: "スタッフを呼ぶ" }),
       ).toBeEnabled();
+    },
+  );
+});
+
+// =========================================================================
+// タスク6.4: アクティブセッション不在時の案内画面
+// Requirements: 1.1, 1.3
+// =========================================================================
+
+function noSessionContext(label = "1番卓") {
+  return {
+    ok: true as const,
+    value: {
+      table: { id: "table-1", label },
+      activeSession: null,
+      confirmedTotal: 0,
+      hasOpenCallRequest: false,
+      menu: baseMenu,
+    },
+  };
+}
+
+describe("MenuScreen（タスク6.4: アクティブセッション不在時の案内画面）", () => {
+  beforeEach(() => {
+    mockGetOrderingContext.mockReset();
+    mockSubmitOrder.mockReset();
+    mockCreateCallRequest.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("アクティブセッションが無い場合、案内画面のみが表示され、メニュー・カート・確定注文合計バー・呼び出しボタンは一切描画されない（観測可能な完了条件）", async () => {
+    mockGetOrderingContext.mockResolvedValue(noSessionContext());
+
+    render(<MenuScreen tableId="table-1" />);
+
+    expect(
+      await screen.findByTestId("no-active-session-screen"),
+    ).toBeInTheDocument();
+    // 要件1.3「スタッフを呼ぶよう促す」の文言（見出し・本文それぞれで
+    // 個別に検証する。両方とも/スタッフ|店員/にマッチするため単純な
+    // getByTextだと複数要素がヒットしてしまう）。
+    expect(
+      screen.getByRole("heading", { name: /スタッフ/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("no-active-session-message")).toHaveTextContent(
+      "店員",
+    );
+
+    // 卓の識別のためラベル表示は許容される（NoActiveSessionScreen.tsx
+    // 冒頭コメント参照）が、メニュー・カート・確定注文合計バー・
+    // 呼び出しボタンは一切描画されない（CSSで隠すのではなく、そもそも
+    // DOM上に構築されないことをqueryBy*で確認する）。
+    expect(screen.getByTestId("table-label")).toHaveTextContent("1番卓");
+    expect(screen.queryByText("唐揚げ")).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "スタッフを呼ぶ" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("call-button")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("cart-count")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("confirmed-total-bar"),
+    ).not.toBeInTheDocument();
+  });
+
+  it(
+    "アクティブセッション不在の状態からレジの入店操作（start_session）でセッションが" +
+      "作成されると、案内画面はポーリングにより再読み込みなしにメニュー画面へ自動遷移する" +
+      "（6.4の設計判断: ポーリングを\"no-session\"状態でも継続する）",
+    async () => {
+      vi.useFakeTimers();
+      mockGetOrderingContext.mockResolvedValueOnce(noSessionContext());
+
+      render(<MenuScreen tableId="table-1" />);
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(
+        screen.getByTestId("no-active-session-screen"),
+      ).toBeInTheDocument();
+
+      // レジがstart_sessionを実行し、次のポーリングでアクティブセッションが
+      // 検知される。
+      mockGetOrderingContext.mockResolvedValueOnce(okContext());
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(CONFIRMED_TOTAL_POLL_INTERVAL_MS);
+      });
+
+      expect(mockGetOrderingContext).toHaveBeenCalledTimes(2);
+      expect(
+        screen.queryByTestId("no-active-session-screen"),
+      ).not.toBeInTheDocument();
+      // 6.2/6.3のfakeTimersテストと同じ方針: fakeTimers有効時は
+      // findBy*（内部でsetTimeoutベースの再試行ループを使うため、実タイマー
+      // が動かない状況では待ち続けてタイムアウトする）ではなく、直前の
+      // actでReactの状態更新が同期的にflush済みであることを前提に
+      // 同期的なgetBy*を使う。
+      expect(screen.getByText("唐揚げ")).toBeInTheDocument();
+    },
+  );
+
+  it("メニュー画面の表示中に来店セッションが終了すると、ポーリングにより案内画面へ自動的に戻る", async () => {
+    vi.useFakeTimers();
+    mockGetOrderingContext.mockResolvedValueOnce(okContext());
+
+    render(<MenuScreen tableId="table-1" />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText("唐揚げ")).toBeInTheDocument();
+
+    // レジが会計操作でセッションを終了したことを模す。
+    mockGetOrderingContext.mockResolvedValueOnce(noSessionContext());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(CONFIRMED_TOTAL_POLL_INTERVAL_MS);
+    });
+
+    expect(
+      screen.getByTestId("no-active-session-screen"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("唐揚げ")).not.toBeInTheDocument();
+  });
+});
+
+// =========================================================================
+// タスク6.4のレビュー差し戻し対応: セッション識別子変化時の
+// per-session-scopedなクライアント状態リセット
+// Requirements: 4.4（要件4のセッション整合性の意図を直接サポートする
+// 追加修正）
+//
+// 独立レビューで発見されたバグ: 卓のQRコードは客グループが入れ替わる
+// たびに再利用されるが、要件4.4により新しい来店セッションには必ず
+// 新しい（前回とは異なる）sessionIdが割り当てられる。ready(セッションA)
+// → no-session → ready(セッションB、別id) というサイクルを経ても、
+// cart/cartPanelOpen/submission/callState/idempotencyKeyRef.currentが
+// 一切リセットされず、セッションAの状態がセッションBの画面に残っていた
+// （MenuScreen.tsxのlastSessionIdRef/resetSessionScopedStateコメント
+// 参照）。
+//
+// 本ブロックの全テストはvi.useFakeTimers()を使う（ポーリングの複数tickを
+// 明示的に進める必要があるため）。既存の6.2/6.3のfakeTimersテストと同じ
+// 方針（1007行目付近のコメント参照）で、findBy*（内部でsetTimeoutベースの
+// 再試行ループを使うため、実タイマーが動かない状況では待ち続けて
+// タイムアウトする）は使わず、直前のactでReactの状態更新が同期的に
+// flush済みであることを前提に同期的なgetBy*を使う専用ヘルパーを用いる
+// （ファイル冒頭のaddKaraageToCart/openCartPanelは内部でfindBy*を使う
+// ため、fakeTimers下ではそのまま使えない）。
+// =========================================================================
+
+/** addKaraageToCartのfakeTimers対応版（findBy*ではなく同期的なgetBy*を使う）。 */
+function addKaraageToCartSync() {
+  fireEvent.click(screen.getByRole("button", { name: /唐揚げ/ }));
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "選択を確定" }));
+}
+
+/** openCartPanelのfakeTimers対応版（findBy*ではなく同期的なgetBy*を使う）。 */
+function openCartPanelSync() {
+  fireEvent.click(screen.getByTestId("cart-count"));
+  return screen.getByRole("dialog", { name: "注文カート" });
+}
+
+describe("MenuScreen（タスク6.4レビュー修正: セッション識別子変化時のクライアント状態リセット）", () => {
+  beforeEach(() => {
+    mockGetOrderingContext.mockReset();
+    mockSubmitOrder.mockReset();
+    mockCreateCallRequest.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it(
+    "no-sessionを経由して異なるsessionIdの新しいセッションへ遷移すると、" +
+      "前のセッションのカートは引き継がれない" +
+      "（独立レビューで発見されたカート越境バグの再現テスト）",
+    async () => {
+      vi.useFakeTimers();
+      mockGetOrderingContext.mockResolvedValueOnce(
+        okContext(baseMenu, 0, false, "session-A"),
+      );
+
+      render(<MenuScreen tableId="table-1" />);
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      addKaraageToCartSync();
+      expect(screen.getByTestId("cart-count")).toHaveTextContent("1");
+      // カートパネルも開いたままにしておく（cartPanelOpenのリセットも
+      // 併せて検証するため）。
+      openCartPanelSync();
+      expect(
+        screen.getByRole("dialog", { name: "注文カート" }),
+      ).toBeInTheDocument();
+
+      // セッションA終了（レジの会計操作）を検知し"no-session"へ遷移。
+      mockGetOrderingContext.mockResolvedValueOnce(noSessionContext());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(CONFIRMED_TOTAL_POLL_INTERVAL_MS);
+      });
+      expect(
+        screen.getByTestId("no-active-session-screen"),
+      ).toBeInTheDocument();
+
+      // 後から着席した別の客グループ（セッションB、別id）を検知。
+      mockGetOrderingContext.mockResolvedValueOnce(
+        okContext(baseMenu, 0, false, "session-B"),
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(CONFIRMED_TOTAL_POLL_INTERVAL_MS);
+      });
+
+      expect(screen.getByText("唐揚げ")).toBeInTheDocument();
+      // 核心のアサーション: セッションAのカート内容・カートパネルの
+      // 開閉状態がセッションBに引き継がれていない。
+      expect(screen.getByTestId("cart-count")).toHaveTextContent("0");
+      expect(
+        screen.queryByRole("dialog", { name: "注文カート" }),
+      ).not.toBeInTheDocument();
+    },
+  );
+
+  it(
+    "呼び出し操作でエラー状態になった直後にno-sessionを経由して異なる" +
+      "sessionIdの新しいセッションへ遷移すると、前のセッションの呼び出し" +
+      "エラー表示は引き継がれない" +
+      "（独立レビューで発見された呼び出し状態越境バグの再現テスト）",
+    async () => {
+      vi.useFakeTimers();
+      mockGetOrderingContext
+        .mockResolvedValueOnce(okContext(baseMenu, 0, false, "session-A"))
+        // handleCallStaffのSESSION_NOT_ACTIVE分岐が明示的に呼ぶ
+        // refreshOrderingContextの応答（同一セッションのまま）。
+        .mockResolvedValueOnce(okContext(baseMenu, 0, false, "session-A"))
+        // ポーリング: セッションA終了を検知。
+        .mockResolvedValueOnce(noSessionContext())
+        // ポーリング: 別の客グループ（セッションB、別id）を検知。
+        .mockResolvedValueOnce(okContext(baseMenu, 0, false, "session-B"));
+      mockCreateCallRequest.mockResolvedValueOnce({
+        ok: false,
+        error: { code: "SESSION_NOT_ACTIVE" },
+      });
+
+      render(<MenuScreen tableId="table-1" />);
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.getByText("唐揚げ")).toBeInTheDocument();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "スタッフを呼ぶ" }),
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByRole("alert")).toHaveTextContent(/終了|スタッフ/);
+
+      // セッションA終了を検知し"no-session"へ遷移。
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(CONFIRMED_TOTAL_POLL_INTERVAL_MS);
+      });
+      expect(
+        screen.getByTestId("no-active-session-screen"),
+      ).toBeInTheDocument();
+
+      // 別の客グループ（セッションB、別id）を検知。
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(CONFIRMED_TOTAL_POLL_INTERVAL_MS);
+      });
+
+      expect(screen.getByText("唐揚げ")).toBeInTheDocument();
+      // 核心のアサーション: セッションAの呼び出しエラー表示が残っておらず、
+      // 呼び出しボタンは通常の（未呼び出しの）状態を示す。
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "スタッフを呼ぶ" }),
+      ).toBeEnabled();
+    },
+  );
+
+  it(
+    "送信エラー表示が出た状態のままno-sessionを経由して異なるsessionId" +
+      "の新しいセッションへ遷移すると、前のセッションの送信状態表示は" +
+      "引き継がれない（独立レビューで発見された送信状態越境バグの再現テスト）",
+    async () => {
+      vi.useFakeTimers();
+      mockGetOrderingContext
+        .mockResolvedValueOnce(okContext(baseMenu, 0, false, "session-A"))
+        .mockResolvedValueOnce(noSessionContext())
+        .mockResolvedValueOnce(okContext(baseMenu, 0, false, "session-B"));
+      mockSubmitOrder.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+
+      render(<MenuScreen tableId="table-1" />);
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      addKaraageToCartSync();
+      openCartPanelSync();
+      fireEvent.click(screen.getByRole("button", { name: "注文する" }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        /完了していません|ネットワーク/,
+      );
+
+      // ダイアログを閉じずに（＝submissionのエラー状態を保持したまま）
+      // セッションA終了を検知し"no-session"へ遷移。
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(CONFIRMED_TOTAL_POLL_INTERVAL_MS);
+      });
+      expect(
+        screen.getByTestId("no-active-session-screen"),
+      ).toBeInTheDocument();
+
+      // 別の客グループ（セッションB、別id）を検知。
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(CONFIRMED_TOTAL_POLL_INTERVAL_MS);
+      });
+      expect(screen.getByText("唐揚げ")).toBeInTheDocument();
+
+      // カートパネル自体がcartPanelOpenのリセットにより閉じているため、
+      // 送信エラー表示はDOM上に存在しない。
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("dialog", { name: "注文カート" }),
+      ).not.toBeInTheDocument();
+
+      // セッションBで新たにカートへ品目を追加してカートパネルを開いても、
+      // セッションAの送信エラー表示が残っていない
+      // （submissionがidleへリセットされていることの確認）。
+      addKaraageToCartSync();
+      openCartPanelSync();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.queryByText("送信完了")).not.toBeInTheDocument();
+    },
+  );
+
+  it(
+    "sessionIdが変わらない通常のポーリング更新では、進行中のカートは" +
+      "クリアされない（過度に広い修正になっていないことを確認する" +
+      "否定的リグレッションテスト）",
+    async () => {
+      vi.useFakeTimers();
+      mockGetOrderingContext.mockResolvedValueOnce(
+        okContext(baseMenu, 0, false, "session-1"),
+      );
+
+      render(<MenuScreen tableId="table-1" />);
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      addKaraageToCartSync();
+      expect(screen.getByTestId("cart-count")).toHaveTextContent("1");
+
+      // 同じsessionIdのまま、confirmedTotalだけが更新される通常の
+      // ポーリング（同席者の別端末からの注文を模す、要件1.12）。
+      mockGetOrderingContext.mockResolvedValueOnce(
+        okContext(baseMenu, 1500, false, "session-1"),
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(CONFIRMED_TOTAL_POLL_INTERVAL_MS);
+      });
+
+      expect(screen.getByTestId("confirmed-total-amount")).toHaveTextContent(
+        "¥1,500",
+      );
+      // 核心のアサーション: sessionIdが変わっていないため、進行中の
+      // カートは一切クリアされない（このガードが無いと、5秒ごとの
+      // ポーリングのたびにカートが消えてしまう重大なregressionになる）。
+      expect(screen.getByTestId("cart-count")).toHaveTextContent("1");
     },
   );
 });

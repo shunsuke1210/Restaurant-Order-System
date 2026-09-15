@@ -16,6 +16,7 @@ import OptionSelectionPanel, {
 import ConfirmedTotalBar from "./ConfirmedTotalBar";
 import CartPanel, { type CartSubmissionState } from "./CartPanel";
 import CallButton, { type CallButtonState } from "./CallButton";
+import NoActiveSessionScreen from "./NoActiveSessionScreen";
 
 type MenuScreenProps = {
   tableId: string;
@@ -96,6 +97,31 @@ type ViewState =
  * 上記の通りRealtimeへ穴を開けるより、`useRealtimeFeed`の設計思想
  * ——「ペイロードを信頼せず、必ずサーバー側RPCで再取得する」——を
  * ポーリングという形でそのまま踏襲する）。
+ *
+ * ## タスク6.4での拡張: "no-session"状態でもポーリングを継続する設計判断
+ * 6.1時点では、アクティブセッションが無い場合の画面（"no-session"）は
+ * クラッシュ・空白画面を避けるための最小限の案内文のみで、ポーリングの
+ * 対象にも含まれていなかった（下記のポーリング用useEffectは
+ * `view.status !== "ready"`の間は何もしない実装だった）。そのため、
+ * レジが入店操作（`start_session`）を行ってアクティブセッションが
+ * 作成された後も、客が手動でページを再読み込みしない限り案内画面の
+ * ままだった。
+ *
+ * これはrequirements.md 1.1「客が卓のQRコードを読み取ると、アクティブな
+ * 来店セッションの有無を確認する」を一度きりのチェックとしか読んでおらず、
+ * 本プロジェクトが6.2（確定注文合計のライブ更新）・6.3（呼び出し対応済みの
+ * 検知）で一貫して確立してきた「サーバー側の状態変化を、客に手動再読み込みを
+ * 要求せずポーリングで追随する」というUXパターンとも整合しない。
+ * design.md「来店セッションのライフサイクル」図・CustomerOrderApp要約は
+ * "no-session"状態でのポーリング可否について明示的な制約を置いておらず
+ * （`getOrderingContext`はテーブルが存在する限りactiveSessionの有無に
+ * 関わらず呼び出し可能、0003_rpc_customer_gateway.sql参照）、要件・設計と
+ * 矛盾しないため、6.4の実装判断として"no-session"状態でも同じ
+ * `refreshOrderingContext`・同じ5秒間隔ポーリングを継続し、レジの
+ * 入店操作を検知した時点で自動的にメニュー画面（"ready"）へ遷移させる
+ * （下記のポーリング用useEffectとrefreshOrderingContext内のガード条件を
+ * "ready"だけでなく"no-session"も対象に含める）。新しいポーリングループは
+ * 追加せず、既存の仕組みへ相乗りするだけに留める。
  */
 export const CONFIRMED_TOTAL_POLL_INTERVAL_MS = 5000;
 
@@ -150,10 +176,15 @@ function toReadyState(context: OrderingContext): ViewState {
  * 提供する。呼び出しボタンの表示・送信・重複防止表示（タスク6.3、
  * 要件2.1-2.3）も本コンポーネント（CallButton.tsxへ委譲）が担う。
  *
- * アクティブセッション不在時の専用案内画面は6.4の責務であり、本コンポーネント
- * は実装しない。アクティブセッションが無い場合はクラッシュや空白画面を
- * 避けるための最小限の案内文のみを表示する（6.4が正式なUIを実装する前提。
- * この分岐では要件2.1により呼び出しボタンも表示しない）。
+ * アクティブセッション不在時の専用案内画面（タスク6.4、要件1.1・1.3）は
+ * NoActiveSessionScreen.tsxへ委譲する（CallButton/ConfirmedTotalBar等と
+ * 同じ「表示専用コンポーネントへの委譲」という既存パターンを踏襲）。
+ * この分岐では要件2.1により呼び出しボタンも表示しない（呼び出しボタンは
+ * アクティブセッションがある間のみ表示するものであり、
+ * NoActiveSessionScreen自体がその他のUI一式と共にレンダリングされない
+ * ためDOM上にも存在しない）。"no-session"状態でもポーリングを継続し
+ * レジの入店操作を自動検知する設計判断は上記のポーリング間隔コメント
+ * （CONFIRMED_TOTAL_POLL_INTERVAL_MS直前）を参照。
  */
 export default function MenuScreen({ tableId }: MenuScreenProps) {
   const gateway = useMemo(
@@ -261,6 +292,70 @@ export default function MenuScreen({ tableId }: MenuScreenProps) {
   const sequenceRef = useRef(0);
   const lastCallStateSeqRef = useRef(0);
 
+  // 独立レビューで発見されたバグの修正（本タスク6.4の差し戻し対応）:
+  // 卓のQRコードは客グループが入れ替わるたびに再利用されるが、要件4.4に
+  // より新しい来店セッションには必ず新しい（前回とは異なる）sessionIdが
+  // 割り当てられる。ところがcart/cartPanelOpen/submission/callState/
+  // idempotencyKeyRef.currentはいずれも「暗黙のうちに直前にアクティブ
+  // だったセッションに紐づく」ローカル状態でありながら、sessionIdが実際に
+  // 変わったこと（＝別の、無関係な客グループへの入れ替わり）を検知して
+  // リセットする仕組みが一切無かった。
+  //
+  // 再現手順（レビューで確認済み）: (1) セッションAのカートに品目を追加。
+  // (2) ポーリングが来店セッション終了を検知し"no-session"へ遷移。
+  // (3) さらにポーリングが、後から着席した別の客グループの新しい
+  // セッションB（sessionIdはAとは別物）を検知して"ready"へ復帰。この
+  // サイクルの後もセッションAのカートの中身がそのままセッションBの画面に
+  // 残っており、セッションBの客がそれに気づかず送信すると、セッションA
+  // の品目がセッションBの正当な注文へ紛れ込む——要件4のセッション整合性
+  // が存在する目的そのものに反する、客グループ間の会計混同である。
+  // 同根の問題（前のセッションの一時的なUI状態が次のセッションの画面に
+  // 漏れる）が呼び出しボタンのエラー表示（callState）・カートパネルの
+  // 開閉状態（cartPanelOpen）・送信結果表示（submission）についても
+  // レビューで確認された。idempotencyKeyRef.currentはsubmit_orderの
+  // 重複排除が(session_id, idempotency_key)の組み合わせで判定される
+  // ため厳密には別セッションへ誤適用されることはないが、一貫性・
+  // 防御的な観点から他の4つと合わせてリセットする。
+  //
+  // 修正方針: 「直近にリセット済みのsessionId」を単調に追跡する
+  // lastSessionIdRefを導入し、toReadyStateの結果が"ready"かつ
+  // そのsessionIdがlastSessionIdRef.currentと異なる場合
+  // （"no-session"→"ready"の遷移、初回マウントでの最初の"ready"遷移、
+  // および万一"ready"(A)→"ready"(B)がポーリングを跨がず直接届いた
+  // 場合の防御的なケースも含む）にのみ、上記5つの状態を初期値へ一括で
+  // リセットする。sessionIdが変わらない通常のポーリング
+  // （confirmedTotal/hasOpenCallRequest/メニューの更新のみ）では
+  // 一切発火させない（進行中のカートを不必要にクリアするという別の
+  // regressionを避けるため）。判定・リセットの実行はいずれも
+  // resetSessionScopedStateという単一の箇所に集約し、初回読み込み
+  // （下記マウント時useEffect）とポーリング（refreshOrderingContext）の
+  // 両方の呼び出し元がこれを経由することで、分岐の重複・漏れを防ぐ。
+  //
+  // 6.3のhasOpenCallRequest陳腐化抑制ガード（sequenceRef/
+  // lastCallStateSeqRef、prev.status === "ready"での絞り込み、直上）とは
+  // 独立した別の関心事であり、その既存ロジックは変更しない
+  // （本リセットはその上に追加されるだけで、置き換えるものではない）。
+  const lastSessionIdRef = useRef<string | null>(null);
+
+  /**
+   * per-session-scopedなクライアント状態（cart/cartPanelOpen/
+   * submission/callState/idempotencyKeyRef.current）を初期値へ一括
+   * リセットし、lastSessionIdRef.currentを新しいsessionIdへ更新する
+   * 唯一の経路（上記lastSessionIdRefコメント参照）。呼び出し元
+   * （マウント時useEffect・refreshOrderingContextの双方）が
+   * 「sessionIdが実際に変わったか」を判定した上で、変わった場合にのみ
+   * newSessionId（toReadyStateが返す新しい"ready"状態のsessionId）を
+   * 渡して呼ぶ。
+   */
+  const resetSessionScopedState = useCallback((newSessionId: string) => {
+    lastSessionIdRef.current = newSessionId;
+    setCart([]);
+    setCartPanelOpen(false);
+    setSubmission({ kind: "idle" });
+    setCallState({ kind: "idle" });
+    idempotencyKeyRef.current = null;
+  }, []);
+
   /**
    * handleCallStaffの成功/CALL_ALREADY_OPENの両方から呼ばれる、
    * hasOpenCallRequestをtrueへ確定させる唯一の経路（上記sequenceRefの
@@ -288,6 +383,16 @@ export default function MenuScreen({ tableId }: MenuScreenProps) {
    * 注文送信時（handleSubmit）の責務であり、ここでは「次回また
    * 取得を試みる」という単純なベストエフォートに徹する（要件1.11とは
    * 別の関心事）。
+   *
+   * タスク6.4での拡張: "no-session"状態からもこの関数が呼ばれるように
+   * なった（下記ポーリング用useEffect参照）。"no-session"→"ready"（レジの
+   * 入店操作を検知）だけでなく、"ready"→"no-session"（来店セッション終了を
+   * 検知）の両方向の遷移が起こりうるが、いずれもtoReadyStateが
+   * `context.activeSession`の有無だけから機械的に導出するため、本関数
+   * 自体の分岐ロジックを増やす必要はない。ただしhasOpenCallRequestの
+   * 楽観的確定（sequenceRef）は"ready"状態（呼び出しボタンが存在する間）
+   * にしか意味を持たないため、直前の状態が"ready"だった場合に限って
+   * その調停ロジックを適用する（下記ガード参照）。
    */
   const refreshOrderingContext = useCallback(async () => {
     // 上記sequenceRefのコメント参照: この要求"送信"の瞬間（await前）に
@@ -300,19 +405,51 @@ export default function MenuScreen({ tableId }: MenuScreenProps) {
       if (!result.ok) {
         return;
       }
+      const next = toReadyState(result.value);
+
+      // 独立レビューで発見されたバグの修正（上記lastSessionIdRef/
+      // resetSessionScopedStateコメント参照）: sessionIdが実際に
+      // 変わったかどうかは、下記setViewの関数更新子が受け取るprevには
+      // 依存させず、ここでlastSessionIdRef.currentとの比較により判定
+      // する。prevは"no-session"のことがあり（sessionId自体を持たない）、
+      // また万一"ready"(A)→"ready"(B)が直接届いた場合でも、
+      // lastSessionIdRef.currentとの比較なら一貫して検知できるため
+      // （prev.sessionIdとの比較だけに頼ると、直前が"no-session"だった
+      // 場合に判定できない）。
+      let sessionChanged = false;
+      if (next.status === "ready" && next.sessionId !== lastSessionIdRef.current) {
+        sessionChanged = true;
+        resetSessionScopedState(next.sessionId);
+      }
+
       setView((prev) => {
-        if (prev.status !== "ready") {
+        // タスク6.4: "ready"に加えて"no-session"の間もこの再取得結果を
+        // 適用する（"no-session"→"ready"の自動遷移、および"ready"→
+        // "no-session"の逆方向の両方を成立させるため）。"loading"/"error"
+        // の間は6.1/6.2と同じく何もしない（初回読み込みのuseEffectと
+        // 責務が競合しないようにする既存方針を維持）。
+        if (prev.status !== "ready" && prev.status !== "no-session") {
           return prev;
         }
-        const next = toReadyState(result.value);
         if (next.status !== "ready") {
           return next;
         }
-        if (requestSeq < lastCallStateSeqRef.current) {
+        if (
+          !sessionChanged &&
+          prev.status === "ready" &&
+          requestSeq < lastCallStateSeqRef.current
+        ) {
           // この要求は、直近の楽観的確定（handleCallStaff）より前に
           // 送信されていた。hasOpenCallRequestに関してはその確定より
           // 古いサーバー状態を反映しているに過ぎないため上書きしない
-          // （他フィールドは通常どおり最新化する）。
+          // （他フィールドは通常どおり最新化する）。呼び出しボタンは
+          // "ready"状態でしか存在せず楽観的確定も起こり得ないため、
+          // 直前が"no-session"だった場合（＝今回が"no-session"→"ready"の
+          // 遷移）はこの調停自体が無関係であり、常にnextをそのまま使う
+          // （sessionChangedの条件も参照: sessionIdが変わった今回は
+          // セッションBのhasOpenCallRequestがセッションAの楽観的確定とは
+          // 無関係な独立した事実であるため、この調停自体を無効化し常に
+          // サーバー応答をそのまま信頼する）。
           return { ...next, hasOpenCallRequest: prev.hasOpenCallRequest };
         }
         return next;
@@ -320,7 +457,7 @@ export default function MenuScreen({ tableId }: MenuScreenProps) {
     } catch {
       // 上記コメントの通り無視する。
     }
-  }, [gateway, tableId]);
+  }, [gateway, tableId, resetSessionScopedState]);
 
   useEffect(() => {
     let cancelled = false;
@@ -354,7 +491,21 @@ export default function MenuScreen({ tableId }: MenuScreenProps) {
           return;
         }
 
-        setView(toReadyState(result.value));
+        const next = toReadyState(result.value);
+        if (
+          next.status === "ready" &&
+          next.sessionId !== lastSessionIdRef.current
+        ) {
+          // 独立レビューで発見されたバグの修正（上記lastSessionIdRef/
+          // resetSessionScopedStateコメント参照）: 初回読み込みでの
+          // 最初の"ready"遷移もリセット対象に含める。マウント直後は
+          // 各stateが既に初期値のため実質的な副作用はないが、ここで
+          // lastSessionIdRef.currentを確定させることが重要——これにより
+          // 以降のポーリング（refreshOrderingContext）が「sessionIdが
+          // 変わったかどうか」を正しく判定できるようになる。
+          resetSessionScopedState(next.sessionId);
+        }
+        setView(next);
       } catch {
         if (!cancelled) {
           setView({ status: "error", message: GENERIC_ERROR_MESSAGE });
@@ -366,16 +517,26 @@ export default function MenuScreen({ tableId }: MenuScreenProps) {
     return () => {
       cancelled = true;
     };
-  }, [gateway, tableId]);
+  }, [gateway, tableId, resetSessionScopedState]);
 
   // 確定注文合計のライブ更新（要件1.12、ファイル冒頭コメントの設計判断
-  // 「案A: ポーリング」参照）。activeSessionがある間（status==="ready"）
-  // のみ一定間隔で再取得する。ポーリング自体が成功してもstatusが
-  // "ready"のまま変わらない限りこのeffectは再実行されない
-  // （依存配列はview.statusのみ。confirmedTotal等の中身の変化では
-  // 依存配列は変わらないため、インターバルが不要に張り直されることはない）。
+  // 「案A: ポーリング」参照）と、タスク6.4で追加したアクティブセッション
+  // 不在時の自動遷移の両方を、同一のポーリングループで実現する。
+  // "ready"（activeSessionがある）だけでなく"no-session"（無い）の間も
+  // 一定間隔で再取得する（6.4の設計判断、ファイル冒頭
+  // CONFIRMED_TOTAL_POLL_INTERVAL_MS直前のコメント参照）。"loading"/
+  // "error"の間は行わない（初回読み込み自体がまだ完了していない、または
+  // 致命的なエラー状態であり、ポーリングで自己回復させる設計にはしていない
+  // ——エラー画面からの回復は要求されていない）。
+  //
+  // ポーリング自体が成功してもstatusが"ready"⇔"no-session"間で変化しない
+  // 限りこのeffectは再実行されない（依存配列はview.statusのみ。
+  // confirmedTotal等の中身の変化では依存配列は変わらないため、インターバルが
+  // 不要に張り直されることはない）。"ready"⇔"no-session"間の遷移が起きた
+  // 場合はeffectが再実行されクリーンアップ後に新しいインターバルが
+  // 張られるが、同じ間隔・同じ関数での張り直しに過ぎず観測可能な副作用はない。
   useEffect(() => {
-    if (view.status !== "ready") {
+    if (view.status !== "ready" && view.status !== "no-session") {
       return;
     }
     const interval = setInterval(() => {
@@ -594,17 +755,13 @@ export default function MenuScreen({ tableId }: MenuScreenProps) {
   }
 
   if (view.status === "no-session") {
-    // 要件1.3の完全な案内画面は6.4の責務。ここではクラッシュ・空白画面を
-    // 避ける最小限の文言のみ表示する（tasks.md 6.1の指示に基づく意図的な
-    // 割り切り）。
-    return (
-      <main className="p-4">
-        <h1 className="text-lg font-semibold">ご案内をお待ちください</h1>
-        <p className="mt-2 text-neutral-600">
-          この卓はまだご案内前です。店員がご案内するまで少々お待ちください。
-        </p>
-      </main>
-    );
+    // タスク6.4・要件1.1/1.3: 注文フォームの代わりにスタッフを呼ぶよう
+    // 促す専用案内画面（NoActiveSessionScreen.tsx参照）。ここで早期return
+    // するため、以降のメニュー・カート・確定注文合計バー・呼び出しボタンの
+    // JSXは一切構築されない（CSSで隠すのではなく、そもそもDOM上に
+    // 存在しない）。"ready"へ遷移した場合の自動再表示は上記ポーリング
+    // 用useEffectが担う。
+    return <NoActiveSessionScreen table={view.table} />;
   }
 
   const visibleMenu = view.menu.filter(
