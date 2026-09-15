@@ -1,0 +1,134 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import KitchenBoardScreen from "./KitchenBoardScreen";
+
+// ensureDeviceSessionをモックし、KitchenBoardScreenのロジック（デバイス
+// セッション確認の分岐・タブ切り替え・固定ヘッダー構造）を実際のSupabase/DBに
+// 接続せずに検証する（src/app/setup/[role]/SetupForm.test.tsxと同じ
+// モック方式）。
+const mockEnsureDeviceSession = vi.fn();
+
+vi.mock("@/lib/device/useDeviceIdentity", () => ({
+  ensureDeviceSession: (...args: unknown[]) => mockEnsureDeviceSession(...args),
+}));
+
+describe("KitchenBoardScreen", () => {
+  beforeEach(() => {
+    mockEnsureDeviceSession.mockReset();
+  });
+
+  it("デバイスが未プロビジョニング（NOT_PROVISIONED）の場合、クラッシュせず案内メッセージを表示する", async () => {
+    mockEnsureDeviceSession.mockResolvedValue({
+      ok: false,
+      error: { code: "NOT_PROVISIONED" },
+    });
+
+    render(<KitchenBoardScreen />);
+
+    expect(
+      await screen.findByTestId("kitchen-device-unavailable"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("セットアップ");
+    // 未プロビジョニング時はタブ・ヘッダー・プレースホルダーのいずれも
+    // 描画されない（9.1が正式な導線を実装するまでの最小限の案内に留める）。
+    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+  });
+
+  it("ensureDeviceSessionが例外を投げても（ドキュメント化されていない失敗）、クラッシュせず案内メッセージを表示する", async () => {
+    mockEnsureDeviceSession.mockRejectedValue(new Error("network error"));
+
+    render(<KitchenBoardScreen />);
+
+    expect(
+      await screen.findByTestId("kitchen-device-unavailable"),
+    ).toBeInTheDocument();
+  });
+
+  it("kitchen以外のroleでプロビジョニング済みの場合も、クラッシュせず案内メッセージを表示する", async () => {
+    mockEnsureDeviceSession.mockResolvedValue({
+      ok: true,
+      value: { deviceUserId: "user-1", role: "register", storeId: "store-1" },
+    });
+
+    render(<KitchenBoardScreen />);
+
+    expect(
+      await screen.findByTestId("kitchen-device-unavailable"),
+    ).toBeInTheDocument();
+  });
+
+  describe("kitchenデバイスとしてプロビジョニング済みの場合", () => {
+    beforeEach(() => {
+      mockEnsureDeviceSession.mockResolvedValue({
+        ok: true,
+        value: { deviceUserId: "user-1", role: "kitchen", storeId: "store-1" },
+      });
+    });
+
+    it("初期表示はフードボードのタブが選択され、そのプレースホルダーを表示する", async () => {
+      render(<KitchenBoardScreen />);
+
+      expect(
+        await screen.findByTestId("kitchen-board-placeholder"),
+      ).toHaveTextContent("フードボード（実装は7.2）");
+      expect(
+        screen.getByRole("tab", { name: "フードボード" }),
+      ).toHaveAttribute("aria-selected", "true");
+    });
+
+    it("3つのタブ（フード／ドリンク／売り切れ）が表示され、クリックで表示内容が切り替わる（他のタブの内容は表示されない）", async () => {
+      render(<KitchenBoardScreen />);
+      await screen.findByTestId("kitchen-board-placeholder");
+
+      const foodTab = screen.getByRole("tab", { name: "フードボード" });
+      const drinkTab = screen.getByRole("tab", { name: "ドリンクボード" });
+      const soldoutTab = screen.getByRole("tab", { name: "売り切れボード" });
+
+      fireEvent.click(drinkTab);
+      expect(screen.getByTestId("kitchen-board-placeholder")).toHaveTextContent(
+        "ドリンクボード（実装は7.3）",
+      );
+      expect(
+        screen.queryByText("フードボード（実装は7.2）"),
+      ).not.toBeInTheDocument();
+      expect(drinkTab).toHaveAttribute("aria-selected", "true");
+      expect(foodTab).toHaveAttribute("aria-selected", "false");
+
+      fireEvent.click(soldoutTab);
+      expect(screen.getByTestId("kitchen-board-placeholder")).toHaveTextContent(
+        "売り切れボード（実装は7.4）",
+      );
+      expect(
+        screen.queryByText("ドリンクボード（実装は7.3）"),
+      ).not.toBeInTheDocument();
+      expect(soldoutTab).toHaveAttribute("aria-selected", "true");
+
+      fireEvent.click(foodTab);
+      expect(screen.getByTestId("kitchen-board-placeholder")).toHaveTextContent(
+        "フードボード（実装は7.2）",
+      );
+    });
+
+    it("固定ヘッダー（タブバー含む）とスクロール領域は兄弟要素であり、タブバーはスクロール領域の子孫ではない", async () => {
+      render(<KitchenBoardScreen />);
+      await screen.findByTestId("kitchen-board-placeholder");
+
+      const header = screen.getByTestId("kitchen-fixed-header");
+      const scrollArea = screen.getByTestId("kitchen-scroll-area");
+      const tablist = screen.getByRole("tablist");
+
+      // ヘッダーとスクロール領域は同じ親を持つ兄弟要素（どちらかがもう
+      // 一方の子孫ではない）。mock-preview.htmlの`.screen-header`/`.tabs`
+      // （flex-shrink:0）と`.scroll-area`の関係と同じ構造。
+      expect(header.parentElement).toBe(scrollArea.parentElement);
+      expect(scrollArea.contains(header)).toBe(false);
+      expect(header.contains(scrollArea)).toBe(false);
+
+      // タブバー自体はヘッダー（固定領域）の子孫であり、スクロール領域の
+      // 子孫ではない——観測可能な完了条件「スクロールしてもタブ・ヘッダーが
+      // 画面上部に固定表示され続ける」が構造上成立するための前提。
+      expect(header.contains(tablist)).toBe(true);
+      expect(scrollArea.contains(tablist)).toBe(false);
+    });
+  });
+});

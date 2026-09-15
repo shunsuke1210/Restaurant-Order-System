@@ -1,9 +1,13 @@
-// 厨房KDS画面のプレースホルダー。
-// 受注一覧・ステータス更新・売り切れ登録の実装は後続タスクで行う。
+import KitchenBoardScreen from "./KitchenBoardScreen";
+
+/**
+ * 厨房KDS画面のルートエントリ。
+ * デバイスセッション確認・3タブ切り替え・固定ヘッダーの実際のロジックは
+ * すべてKitchenBoardScreen（クライアントコンポーネント）へ委譲する薄い
+ * サーバーコンポーネントのラッパー（src/app/order/[tableId]/page.tsxと
+ * 同じ構成）。タスク1.1のプレースホルダー見出しを、タスク7.1の実装で
+ * 置き換える。
+ */
 export default function KitchenPage() {
-  return (
-    <main>
-      <h1>厨房画面</h1>
-    </main>
-  );
+  return <KitchenBoardScreen />;
 }
