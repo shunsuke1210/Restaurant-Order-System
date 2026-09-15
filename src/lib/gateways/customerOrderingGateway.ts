@@ -52,6 +52,19 @@ import { type Result, ok, err } from "../result";
  * （`vi.mock("../supabase/client", ...)`）が不要になる。実アプリ側
  * （客向け注文画面、タスク6.x）では`createCustomerOrderingGateway(
  * createBrowserClient())`という1行の組み合わせで利用する想定。
+ *
+ * ## MenuItemView.genreについて（タスク6.1で追加）
+ * design.mdのMenuItemView型は当初（タスク3.1/3.4時点）
+ * id/name/price/soldOut/imageUrl/optionsのみを持ち、genreを含んでいなかった。
+ * タスク6.1（客側メニュー画面のジャンル別タブUI）の実装着手時、
+ * design.mdのCustomerOrderApp要約が要求する「おすすめ/一品/フード/ドリンクの
+ * ジャンル別タブ」を実装するにはmenu_items.genre（0001_schema.sqlで
+ * 既に'ippin'|'food'|'drink'のcheck制約付きで定義済み）が必要だが、
+ * get_ordering_contextの応答にもMenuItemView型にも含まれていないという
+ * ギャップが判明した。0009_ordering_context_menu_genre.sqlで
+ * get_ordering_contextの応答へ`genre`を追加し（既存キーの形状変更なし、
+ * 関数シグネチャも不変の追加的変更）、本ファイルのMenuItemViewにも
+ * 反映した。design.md本文（MenuItemView型定義）も合わせて更新済み。
  */
 
 // ===========================================================================
@@ -75,8 +88,19 @@ export interface MenuItemView {
   price: number;
   soldOut: boolean;
   imageUrl: string | null;
+  genre: MenuItemGenre;
   options: ReadonlyArray<MenuItemOption>;
 }
+
+/**
+ * 品目のジャンル。値域はstaffOperationsGateway.tsが定義する同名の型
+ * （menu_items.genre列そのもの）と同一。CustomerOrderingGatewayと
+ * StaffOperationsGatewayを「2系統に完全に分離する」というdesign.mdの
+ * アーキテクチャ方針（Architecture Integration参照）に沿い、
+ * StaffOperationsGateway側のタスク成果物をこのタスクから変更しないよう、
+ * 意図的にここで再定義する（相互import・相互依存はさせない）。
+ */
+export type MenuItemGenre = "ippin" | "food" | "drink";
 
 export type MenuItemOption =
   | {
@@ -244,6 +268,7 @@ function toOrderingContext(data: Json): OrderingContext {
       price: number;
       soldOut: boolean;
       imageUrl: string | null;
+      genre: MenuItemGenre;
       options: ReadonlyArray<MenuItemOption>;
     }>;
   };
@@ -258,6 +283,7 @@ function toOrderingContext(data: Json): OrderingContext {
       price: item.price,
       soldOut: item.soldOut,
       imageUrl: item.imageUrl,
+      genre: item.genre,
       options: item.options,
     })),
   };

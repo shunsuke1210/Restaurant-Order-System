@@ -75,6 +75,7 @@ describe("createCustomerOrderingGateway", () => {
               price: 500,
               soldOut: false,
               imageUrl: "https://example.com/item-one.jpg",
+              genre: "food",
               options: [
                 {
                   id: "spice",
@@ -108,6 +109,7 @@ describe("createCustomerOrderingGateway", () => {
               price: 500,
               soldOut: false,
               imageUrl: "https://example.com/item-one.jpg",
+              genre: "food",
               options: [
                 {
                   id: "spice",

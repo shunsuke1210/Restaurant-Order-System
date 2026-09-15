@@ -294,8 +294,17 @@ interface MenuItemView {
   price: number;
   soldOut: boolean;
   imageUrl: string | null;
+  genre: MenuItemGenre;
   options: ReadonlyArray<MenuItemOption>;
 }
+
+// タスク6.1で追加（0009_ordering_context_menu_genre.sql）。値域は
+// StaffOperationsGateway Service Interfaceで定義するMenuItemGenreと同一
+// （menu_items.genre列そのもの）。客側UIのジャンル別タブ表示
+// （本コンポーネント要約「すべて/一品/フード/ドリンクのジャンル別タブ」）に
+// 必要なため、タスク3.1時点のMenuItemViewには含まれていなかったものを
+// 追加的（既存フィールドの形状変更なし）に補った。
+type MenuItemGenre = "ippin" | "food" | "drink";
 
 type MenuItemOption =
   | { id: string; type: "choice"; label: string; choices: ReadonlyArray<string>; default: string }
@@ -597,7 +606,7 @@ type DeviceProvisioningError = { code: "INVALID_SETUP_CODE" } | { code: "NOT_PRO
 ### Presentation Layer（summary only）
 
 #### CustomerOrderApp
-客の卓側QR注文画面。`CustomerOrderingGateway`のみに依存し、新たな責務境界は導入しない。おすすめ/一品/フード/ドリンクのジャンル別タブと、品目の写真・オプション選択UIを提供する。画面下部に確定注文合計を常時表示し、同席者の別端末からの注文にもRealtimeで追随する（要件1.12）。ネットワーク断時は送信失敗を明示し再試行を促す（要件1.11）。
+客の卓側QR注文画面。`CustomerOrderingGateway`のみに依存し、新たな責務境界は導入しない。すべて/一品/フード/ドリンクのジャンル別タブ（`menu_items.genre`の値域に基づく。「おすすめ」相当の独立した分類列は現状のデータモデルにないため実装しない）と、品目の写真・オプション選択UIを提供する。画面下部に確定注文合計を常時表示し、同席者の別端末からの注文にもRealtimeで追随する（要件1.12）。ネットワーク断時は送信失敗を明示し再試行を促す（要件1.11）。
 
 #### KitchenBoard
 厨房画面。`StaffOperationsGateway`と`RealtimeFeed`に依存し、フードボード／ドリンクボード／売り切れボードの3タブを1台のタブレットで切り替える構成とする。各ボードは卓・受注時刻が識別できる一覧表示とジャンルに応じたステータス更新UIを提供し、フードボードの未対応列は一品ジャンルを優先表示し（要件6.7、6.8）、調理完了列は直近に完了したものを上部に表示する（要件6.10）。売り切れの登録・解除操作は実行前に確認ダイアログを表示し、確認後にのみ`setSoldOut`を呼び出す（要件7.1, 7.3）。
