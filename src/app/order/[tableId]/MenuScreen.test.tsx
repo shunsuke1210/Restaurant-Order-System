@@ -28,13 +28,15 @@ import type { MenuItemView } from "@/lib/gateways/customerOrderingGateway";
 
 const mockGetOrderingContext = vi.fn();
 const mockSubmitOrder = vi.fn();
+const mockCreateCallRequest = vi.fn();
 
 vi.mock("@/lib/gateways/customerOrderingGateway", () => ({
   createCustomerOrderingGateway: () => ({
     getOrderingContext: (...args: unknown[]) =>
       mockGetOrderingContext(...args),
     submitOrder: (...args: unknown[]) => mockSubmitOrder(...args),
-    createCallRequest: vi.fn(),
+    createCallRequest: (...args: unknown[]) =>
+      mockCreateCallRequest(...args),
   }),
 }));
 
@@ -97,6 +99,7 @@ const baseMenu: MenuItemView[] = [
 function okContext(
   menu: MenuItemView[] = baseMenu,
   confirmedTotal = 0,
+  hasOpenCallRequest = false,
 ) {
   return {
     ok: true as const,
@@ -104,6 +107,7 @@ function okContext(
       table: { id: "table-1", label: "1番卓" },
       activeSession: { id: "session-1" },
       confirmedTotal,
+      hasOpenCallRequest,
       menu,
     },
   };
@@ -113,6 +117,7 @@ describe("MenuScreen", () => {
   beforeEach(() => {
     mockGetOrderingContext.mockReset();
     mockSubmitOrder.mockReset();
+    mockCreateCallRequest.mockReset();
   });
 
   it("成功応答からメニュー（品目名・価格・写真）を描画する", async () => {
@@ -307,6 +312,7 @@ describe("MenuScreen（タスク6.2: 注文送信・確定注文合計表示・�
   beforeEach(() => {
     mockGetOrderingContext.mockReset();
     mockSubmitOrder.mockReset();
+    mockCreateCallRequest.mockReset();
   });
 
   afterEach(() => {
@@ -592,4 +598,302 @@ describe("MenuScreen（タスク6.2: 注文送信・確定注文合計表示・�
       "¥2,400",
     );
   });
+});
+
+// =========================================================================
+// タスク6.3: 呼び出しボタンUI
+// Requirements: 2.1, 2.2, 2.3
+// =========================================================================
+
+describe("MenuScreen（タスク6.3: 呼び出しボタンUI）", () => {
+  beforeEach(() => {
+    mockGetOrderingContext.mockReset();
+    mockSubmitOrder.mockReset();
+    mockCreateCallRequest.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("アクティブセッションが存在する間、呼び出しボタンが表示される（要件2.1）", async () => {
+    mockGetOrderingContext.mockResolvedValue(okContext());
+
+    render(<MenuScreen tableId="table-1" />);
+    await screen.findByText("唐揚げ");
+
+    const button = screen.getByRole("button", { name: "スタッフを呼ぶ" });
+    expect(button).toBeEnabled();
+  });
+
+  it(
+    "呼び出しボタンをタップすると正しいsessionIdでcreateCallRequestが呼ばれ、" +
+      "成功すると『呼び出し中』の再送不可な状態になる（観測可能な完了条件）",
+    async () => {
+      mockGetOrderingContext.mockResolvedValue(okContext());
+      mockCreateCallRequest.mockResolvedValueOnce({
+        ok: true,
+        value: {
+          id: "call-1",
+          sessionId: "session-1",
+          status: "open",
+          createdAt: "2026-09-15T12:00:00Z",
+        },
+      });
+
+      render(<MenuScreen tableId="table-1" />);
+      await screen.findByText("唐揚げ");
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "スタッフを呼ぶ" }),
+      );
+
+      expect(mockCreateCallRequest).toHaveBeenCalledWith({
+        sessionId: "session-1",
+      });
+
+      const calledButton = await screen.findByRole("button", {
+        name: "呼び出し中",
+      });
+      expect(calledButton).toBeDisabled();
+
+      // 連打しても再送はされない（重複防止表示、観測可能な完了条件そのもの）。
+      fireEvent.click(calledButton);
+      expect(mockCreateCallRequest).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it(
+    "CALL_ALREADY_OPENはエラー表示ではなく、既に成立している『呼び出し中』状態と" +
+      "して扱われる（要件2.3、致命的な失敗として扱わない）",
+    async () => {
+      mockGetOrderingContext.mockResolvedValue(okContext());
+      mockCreateCallRequest.mockResolvedValueOnce({
+        ok: false,
+        error: { code: "CALL_ALREADY_OPEN" },
+      });
+
+      render(<MenuScreen tableId="table-1" />);
+      await screen.findByText("唐揚げ");
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "スタッフを呼ぶ" }),
+      );
+
+      const calledButton = await screen.findByRole("button", {
+        name: "呼び出し中",
+      });
+      expect(calledButton).toBeDisabled();
+      // CALL_ALREADY_OPENは客の意図（スタッフに来てほしい）が既に満たされて
+      // いる状態であり、警告的なエラー表示にはしない。
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    },
+  );
+
+  it("SESSION_NOT_ACTIVEはクラッシュせず、専用のエラーメッセージを表示する（防御的エラーハンドリング）", async () => {
+    mockGetOrderingContext.mockResolvedValue(okContext());
+    mockCreateCallRequest.mockResolvedValueOnce({
+      ok: false,
+      error: { code: "SESSION_NOT_ACTIVE" },
+    });
+
+    render(<MenuScreen tableId="table-1" />);
+    await screen.findByText("唐揚げ");
+
+    fireEvent.click(screen.getByRole("button", { name: "スタッフを呼ぶ" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /終了|スタッフ/,
+    );
+  });
+
+  it("想定外の例外はtry/catchで捕捉され、unhandled rejectionにならず汎用エラーメッセージを表示する", async () => {
+    mockGetOrderingContext.mockResolvedValue(okContext());
+    mockCreateCallRequest.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+
+    render(<MenuScreen tableId="table-1" />);
+    await screen.findByText("唐揚げ");
+
+    fireEvent.click(screen.getByRole("button", { name: "スタッフを呼ぶ" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /予期しないエラー|完了していません|ネットワーク/,
+    );
+    // 呼び出しボタン自体はローカル状態を「呼び出し済み」に固定しない
+    // （サーバーが実際には受理していない可能性があるため）。
+    expect(
+      screen.getByRole("button", { name: "スタッフを呼ぶ" }),
+    ).toBeEnabled();
+  });
+
+  it(
+    "対応済み（resolved）になったことをgetOrderingContextのポーリングで検知すると、" +
+      "ボタンが再び押せる状態に戻る（観測可能な完了条件: 対応済みになるまで再送不可）",
+    async () => {
+      vi.useFakeTimers();
+      // ページ読み込み時点で既に呼び出し中（例: 送信直後の再読み込み）を模す。
+      mockGetOrderingContext.mockResolvedValueOnce(
+        okContext(baseMenu, 0, true),
+      );
+
+      render(<MenuScreen tableId="table-1" />);
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(
+        screen.getByRole("button", { name: "呼び出し中" }),
+      ).toBeDisabled();
+
+      // レジ側で対応済みにしたことを、次のポーリングが反映する。
+      mockGetOrderingContext.mockResolvedValueOnce(
+        okContext(baseMenu, 0, false),
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(CONFIRMED_TOTAL_POLL_INTERVAL_MS);
+      });
+
+      const reenabledButton = screen.getByRole("button", {
+        name: "スタッフを呼ぶ",
+      });
+      expect(reenabledButton).toBeEnabled();
+
+      // 再度呼び出せることの確認（新しい呼び出し意図を妨げない）。
+      mockCreateCallRequest.mockResolvedValueOnce({
+        ok: true,
+        value: {
+          id: "call-2",
+          sessionId: "session-1",
+          status: "open",
+          createdAt: "2026-09-15T12:05:00Z",
+        },
+      });
+      fireEvent.click(reenabledButton);
+      expect(mockCreateCallRequest).toHaveBeenCalledWith({
+        sessionId: "session-1",
+      });
+    },
+  );
+
+  it(
+    "処理中のポーリング応答が、呼び出しボタンの楽観的な『呼び出し中』状態を" +
+      "巻き戻さない（独立レビューで発見されたレース条件の再現テスト）",
+    async () => {
+      // 独立レビューで発見・再現されたレース条件:
+      // 1. ポーリング要求（#2）が送信されるが、サーバーからの応答はまだ
+      //    届いていない（in-flight）。
+      // 2. その応答が届く前に客が呼び出しボタンをタップし、createCallRequest
+      //    が成功する。この時点でサーバー上には実際にopenな呼び出しが
+      //    存在するため、UIは楽観的に即座へ「呼び出し中」（再送不可）へ
+      //    切り替わる。
+      // 3. ところがポーリング要求#2は客がタップする"前"に送信されたもので
+      //    あり、その応答は「タップ時点ではまだ呼び出しが無かった」という
+      //    hasOpenCallRequest: falseを（応答としては正しく、しかし今となっては
+      //    古い事実として）返す。
+      // 4. 修正前の実装はgetOrderingContextの応答でview全体を無条件に
+      //    上書きしていたため、この古い応答が楽観的な「呼び出し中」を
+      //    巻き戻し、実際には対応済みでない呼び出しに対してボタンが
+      //    「スタッフを呼ぶ」（再送可能）に戻ってしまっていた——本タスクの
+      //    観測可能な完了条件「呼び出し送信後、対応済みになるまでボタンが
+      //    再送不可の状態を示す」に違反する。
+      //
+      // 本テストは、(a) この古い応答が「呼び出し中」状態を巻き戻さないこと
+      // （核心のリグレッション防止）と、(b) その後に送信される正当な
+      // ポーリング（タップより後に送信されたもの）は通常どおり反映され、
+      // レジ側の対応済み化によるfalseへの遷移も最終的には正しく検知できる
+      // こと（＝古い応答を無視する仕組みが以後の更新まで永久に遮断して
+      // しまっていないこと）の両方を検証する。
+      vi.useFakeTimers();
+
+      mockGetOrderingContext.mockResolvedValueOnce(
+        okContext(baseMenu, 0, false),
+      );
+
+      render(<MenuScreen tableId="table-1" />);
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(
+        screen.getByRole("button", { name: "スタッフを呼ぶ" }),
+      ).toBeEnabled();
+
+      // ポーリング要求#2（客のタップより"前"に送信される）を、応答未解決の
+      // まま発生させる。
+      let resolveStalePoll!: (value: unknown) => void;
+      const stalePollPromise = new Promise((resolve) => {
+        resolveStalePoll = resolve;
+      });
+      mockGetOrderingContext.mockReturnValueOnce(stalePollPromise);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(CONFIRMED_TOTAL_POLL_INTERVAL_MS);
+      });
+      expect(mockGetOrderingContext).toHaveBeenCalledTimes(2);
+
+      // ポーリング要求#2の応答がまだ届かない間に、客が呼び出しボタンを
+      // タップする。
+      mockCreateCallRequest.mockResolvedValueOnce({
+        ok: true,
+        value: {
+          id: "call-1",
+          sessionId: "session-1",
+          status: "open",
+          createdAt: "2026-09-15T12:00:00Z",
+        },
+      });
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "スタッフを呼ぶ" }),
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(
+        screen.getByRole("button", { name: "呼び出し中" }),
+      ).toBeDisabled();
+
+      // ポーリング要求#2が、タップより前の（今となっては古い）
+      // hasOpenCallRequest: falseで応答する。
+      await act(async () => {
+        resolveStalePoll(okContext(baseMenu, 0, false));
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      // 核心のアサーション: 古いポーリング応答によって「呼び出し中」状態が
+      // 巻き戻されてはならない。
+      expect(
+        screen.getByRole("button", { name: "呼び出し中" }),
+      ).toBeDisabled();
+      expect(
+        screen.queryByRole("button", { name: "スタッフを呼ぶ" }),
+      ).not.toBeInTheDocument();
+
+      // 順方向の確認その1: タップより"後"に送信されるポーリング要求#3は
+      // 通常どおり適用される（trueのまま、抑制されていない）。
+      mockGetOrderingContext.mockResolvedValueOnce(
+        okContext(baseMenu, 0, true),
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(CONFIRMED_TOTAL_POLL_INTERVAL_MS);
+      });
+      expect(
+        screen.getByRole("button", { name: "呼び出し中" }),
+      ).toBeDisabled();
+
+      // 順方向の確認その2: レジ側で対応済みにしたことを、その次の
+      // ポーリング要求#4が正しく検知し、falseへの更新が反映される
+      // （＝古い応答を無視する仕組みが以後の正当な更新まで永久に
+      // ブロックしてしまっていないことの確認）。
+      mockGetOrderingContext.mockResolvedValueOnce(
+        okContext(baseMenu, 0, false),
+      );
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(CONFIRMED_TOTAL_POLL_INTERVAL_MS);
+      });
+      expect(
+        screen.getByRole("button", { name: "スタッフを呼ぶ" }),
+      ).toBeEnabled();
+    },
+  );
 });

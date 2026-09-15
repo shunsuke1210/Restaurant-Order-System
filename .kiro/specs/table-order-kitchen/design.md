@@ -192,7 +192,7 @@ stateDiagram-v2
 | 1.9 | 終了済みセッションへの注文拒否 | CustomerOrderingGateway, Schema & RLS Foundation | `submitOrder`（`SESSION_NOT_ACTIVE`） | 来店セッションのライフサイクル |
 | 1.11 | 送信中のネットワーク断エラー表示 | CustomerOrderApp (UI) | - | - |
 | 1.12 | 確定注文合計の常時表示 | CustomerOrderingGateway, RealtimeFeed | `getOrderingContext`（`confirmedTotal`） | 注文送信〜厨房反映フロー |
-| 2.1-2.4 | 呼び出しボタン送信・重複防止・レジへの通知表示・対応済み処理 | CustomerOrderingGateway, StaffOperationsGateway | `createCallRequest`, `resolveCallRequest`, `listRegisterFeed`（`hasOpenCallRequest`） | 注文送信〜厨房反映フローと同型 |
+| 2.1-2.4 | 呼び出しボタン送信・重複防止・レジへの通知表示・対応済み処理 | CustomerOrderingGateway, StaffOperationsGateway | `createCallRequest`, `getOrderingContext`（`hasOpenCallRequest`）, `resolveCallRequest`, `listRegisterFeed`（`hasOpenCallRequest`） | 注文送信〜厨房反映フローと同型 |
 | 3.1-3.4 | レジの入店（人数記録）/会計操作（確認あり）によるセッション開始・終了 | StaffOperationsGateway | `startSession`, `closeSession` | 来店セッションのライフサイクル |
 | 3.5 | 来店中の人数変更（確認あり） | StaffOperationsGateway | `updatePartySize` | 来店セッションのライフサイクル |
 | 4.1-4.4 | セッション整合性ルール（1卓1アクティブ・拒否・履歴保持・独立ID） | Schema & RLS Foundation, StaffOperationsGateway | `startSession`（`SESSION_ALREADY_ACTIVE`） | 来店セッションのライフサイクル |
@@ -261,6 +261,7 @@ stateDiagram-v2
 - 同一品目でもオプションの選択内容が異なれば別の注文明細として登録する（要件1.8）
 - 呼び出し要求は同一セッションに未対応（`open`）のものがある場合、新規作成しない（要件2.3）
 - `getOrderingContext`は、当該セッションの送信済み注文明細から計算した`confirmedTotal`（レジの`listRegisterFeed`と同一ロジック）を返す（要件1.12）
+- `getOrderingContext`は、当該セッションに未対応（`open`）の呼び出しが存在するかを`hasOpenCallRequest`として返す（タスク6.3で追加、レジの`listRegisterFeed.hasOpenCallRequest`と同一ロジック）。呼び出しボタンが「対応済みになったこと」をクライアント側の推測ではなくサーバー側の再検証で検知するための唯一の経路であり、`confirmedTotal`と同じポーリングに相乗りする（要件2.1, 2.2, 2.3）
 
 **Dependencies**
 - Inbound: CustomerOrderApp (UI) — 客向け画面からの呼び出し (P0)
@@ -285,6 +286,15 @@ interface OrderingContext {
   table: { id: string; label: string };
   activeSession: { id: string } | null;
   confirmedTotal: number;
+  // タスク6.3で追加（0010_ordering_context_call_request.sql）。対象セッションに
+  // 未対応(open)の呼び出しが存在するかを表す。StaffOperationsGateway側の
+  // TableBillingSummary.hasOpenCallRequestと同一の意味・同一の判定式
+  // （call_requests.status = 'open'のexists）を共有する。アクティブセッションが
+  // 無い場合は常にfalse。呼び出しボタン（CustomerOrderApp）が「対応済みに
+  // なったこと」をクライアント側の推測ではなくサーバー側の再検証で検知する
+  // ための唯一の経路であり、既存の confirmedTotal ライブ更新ポーリング
+  // （6.2で確立、getOrderingContextの5秒間隔ポーリング）にそのまま相乗りする。
+  hasOpenCallRequest: boolean;
   menu: ReadonlyArray<MenuItemView>;
 }
 
@@ -606,7 +616,7 @@ type DeviceProvisioningError = { code: "INVALID_SETUP_CODE" } | { code: "NOT_PRO
 ### Presentation Layer（summary only）
 
 #### CustomerOrderApp
-客の卓側QR注文画面。`CustomerOrderingGateway`のみに依存し、新たな責務境界は導入しない。すべて/一品/フード/ドリンクのジャンル別タブ（`menu_items.genre`の値域に基づく。「おすすめ」相当の独立した分類列は現状のデータモデルにないため実装しない）と、品目の写真・オプション選択UIを提供する。画面下部に確定注文合計を常時表示し、同席者の別端末からの注文にも追随して更新する（要件1.12）。更新方式は`getOrderingContext`の定期ポーリング（5秒間隔）であり、Realtimeの`postgres_changes`購読は用いない（タスク6.2で確定。理由: `anon`ロールへの`order_items`等のSELECT権限拡大を避けるため。詳細は`0008_realtime_publication.sql`および`MenuScreen.tsx`冒頭コメント参照）。ネットワーク断時は送信失敗を明示し再試行を促す（要件1.11）。
+客の卓側QR注文画面。`CustomerOrderingGateway`のみに依存し、新たな責務境界は導入しない。すべて/一品/フード/ドリンクのジャンル別タブ（`menu_items.genre`の値域に基づく。「おすすめ」相当の独立した分類列は現状のデータモデルにないため実装しない）と、品目の写真・オプション選択UIを提供する。画面下部に確定注文合計を常時表示し、同席者の別端末からの注文にも追随して更新する（要件1.12）。更新方式は`getOrderingContext`の定期ポーリング（5秒間隔）であり、Realtimeの`postgres_changes`購読は用いない（タスク6.2で確定。理由: `anon`ロールへの`order_items`等のSELECT権限拡大を避けるため。詳細は`0008_realtime_publication.sql`および`MenuScreen.tsx`冒頭コメント参照）。ネットワーク断時は送信失敗を明示し再試行を促す（要件1.11）。アクティブセッションが存在する間、呼び出しボタンを表示する（要件2.1）。タップすると`createCallRequest`を呼び出し、成功または`CALL_ALREADY_OPEN`（既に未対応の呼び出しがある、要件2.3）のいずれの場合も「呼び出し中」の再送不可な状態を表示する。対応済み（`resolved`）になったことは、`hasOpenCallRequest`（タスク6.3で追加、`OrderingContext`）を同じ`getOrderingContext`ポーリングで検知し、ボタンを再度押せる状態へ戻す（新しいRealtime購読・新しいポーリングループを追加しない。0010_ordering_context_call_request.sqlおよび`CallButton.tsx`冒頭コメント参照）。
 
 #### KitchenBoard
 厨房画面。`StaffOperationsGateway`と`RealtimeFeed`に依存し、フードボード／ドリンクボード／売り切れボードの3タブを1台のタブレットで切り替える構成とする。各ボードは卓・受注時刻が識別できる一覧表示とジャンルに応じたステータス更新UIを提供し、フードボードの未対応列は一品ジャンルを優先表示し（要件6.7、6.8）、調理完了列は直近に完了したものを上部に表示する（要件6.10）。売り切れの登録・解除操作は実行前に確認ダイアログを表示し、確認後にのみ`setSoldOut`を呼び出す（要件7.1, 7.3）。

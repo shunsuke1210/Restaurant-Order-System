@@ -68,6 +68,7 @@ describe("createCustomerOrderingGateway", () => {
           table: { id: "table-1", label: "1番卓" },
           activeSession: { id: "session-1" },
           confirmedTotal: 1300,
+          hasOpenCallRequest: true,
           menu: [
             {
               id: "item-1",
@@ -102,6 +103,7 @@ describe("createCustomerOrderingGateway", () => {
           table: { id: "table-1", label: "1番卓" },
           activeSession: { id: "session-1" },
           confirmedTotal: 1300,
+          hasOpenCallRequest: true,
           menu: [
             {
               id: "item-1",
@@ -131,6 +133,7 @@ describe("createCustomerOrderingGateway", () => {
           table: { id: "table-1", label: "1番卓" },
           activeSession: null,
           confirmedTotal: 0,
+          hasOpenCallRequest: false,
           menu: [],
         },
         error: null,
@@ -141,6 +144,7 @@ describe("createCustomerOrderingGateway", () => {
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.value.activeSession).toBeNull();
+        expect(result.value.hasOpenCallRequest).toBe(false);
       }
     });
 

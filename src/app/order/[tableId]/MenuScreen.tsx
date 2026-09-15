@@ -15,6 +15,7 @@ import OptionSelectionPanel, {
 } from "./OptionSelectionPanel";
 import ConfirmedTotalBar from "./ConfirmedTotalBar";
 import CartPanel, { type CartSubmissionState } from "./CartPanel";
+import CallButton, { type CallButtonState } from "./CallButton";
 
 type MenuScreenProps = {
   tableId: string;
@@ -32,6 +33,12 @@ type ViewState =
       sessionId: string;
       menu: ReadonlyArray<MenuItemView>;
       confirmedTotal: number;
+      // タスク6.3で追加。呼び出しボタン（要件2.1-2.3）が「今、呼び出しが
+      // 未対応で存在するか」を判定するためのサーバー側の真の状態
+      // （`getOrderingContext`の`hasOpenCallRequest`）。handleCallStaffの
+      // 楽観的更新（成功/CALL_ALREADY_OPEN直後）もこのフィールドを直接
+      // 書き換える（下記コメント参照）。
+      hasOpenCallRequest: boolean;
     };
 
 /**
@@ -131,6 +138,7 @@ function toReadyState(context: OrderingContext): ViewState {
     sessionId: context.activeSession.id,
     menu: context.menu,
     confirmedTotal: context.confirmedTotal,
+    hasOpenCallRequest: context.hasOpenCallRequest,
   };
 }
 
@@ -139,12 +147,13 @@ function toReadyState(context: OrderingContext): ViewState {
  * page.tsxからtableIdを受け取り、CustomerOrderingGatewayに依存して
  * メニュー閲覧・ジャンル別タブ・オプション選択UI（タスク6.1）、
  * 注文送信・確定注文合計の常時表示・通信断ハンドリング（タスク6.2）を
- * 提供する。
+ * 提供する。呼び出しボタンの表示・送信・重複防止表示（タスク6.3、
+ * 要件2.1-2.3）も本コンポーネント（CallButton.tsxへ委譲）が担う。
  *
- * 呼び出しボタン・アクティブセッション不在時の専用案内画面はそれぞれ
- * 6.3/6.4の責務であり、本コンポーネントはそれらを実装しない。
- * アクティブセッションが無い場合はクラッシュや空白画面を避けるための
- * 最小限の案内文のみを表示する（6.4が正式なUIを実装する前提）。
+ * アクティブセッション不在時の専用案内画面は6.4の責務であり、本コンポーネント
+ * は実装しない。アクティブセッションが無い場合はクラッシュや空白画面を
+ * 避けるための最小限の案内文のみを表示する（6.4が正式なUIを実装する前提。
+ * この分岐では要件2.1により呼び出しボタンも表示しない）。
  */
 export default function MenuScreen({ tableId }: MenuScreenProps) {
   const gateway = useMemo(
@@ -202,20 +211,112 @@ export default function MenuScreen({ tableId }: MenuScreenProps) {
   // submit_orderの重複排除が意図通り機能する。
   const idempotencyKeyRef = useRef<string | null>(null);
 
-  const refreshConfirmedTotal = useCallback(async () => {
-    // バックグラウンド再取得（ポーリング/送信成功直後）の失敗は画面を
-    // 壊さないよう握りつぶす。ネットワーク断の明示的なハンドリングは
-    // 注文送信時（handleSubmit）の責務であり、ここでは「次回また
-    // 取得を試みる」という単純なベストエフォートに徹する（要件1.11とは
-    // 別の関心事）。
+  // 呼び出しボタン（要件2.1-2.3）の一時的なUI状態（送信中/エラー）。
+  // 「今、呼び出しが未対応で存在するか」自体はUI状態ではなくViewState.
+  // hasOpenCallRequest（サーバー側の真の状態＋楽観的更新の合成、下記
+  // handleCallStaffコメント参照）で表現するため、ここでは含めない
+  // （CartSubmissionStateがカート内容自体を持たないのと同じ設計）。
+  const [callState, setCallState] = useState<CallButtonState>({
+    kind: "idle",
+  });
+
+  // 独立レビューで発見されたレース条件の修正: hasOpenCallRequestに関する
+  // 「今分かっている最新の真実」を単調な順序で扱うための機構。
+  //
+  // 問題（再現手順）: (1) ポーリング要求Nが送信される（サーバーはまだ
+  // 応答していない）。(2) その応答が届く前に客が呼び出しボタンをタップし、
+  // handleCallStaffがcreateCallRequestの成功/CALL_ALREADY_OPENを受けて
+  // hasOpenCallRequestをtrueへ楽観的更新する。この時点で呼び出しは実際に
+  // サーバー上でopenになっている。(3) ところが要求Nはタップより"前"に
+  // 送信されたものであり、その応答は「タップ時点ではまだ呼び出しが
+  // 無かった」というhasOpenCallRequest: falseを正しく（が古く）返す。
+  // refreshOrderingContextが応答をそのままview全体へ無条件に上書きする
+  // 実装だと、この古い応答が楽観的更新を巻き戻し、実際には対応済みでない
+  // 呼び出しがボタンを再度「スタッフを呼ぶ」（再送可能）に戻してしまう
+  // ——本タスクの観測可能な完了条件「対応済みになるまでボタンが再送不可の
+  // 状態を示す」に直接違反する。
+  //
+  // 修正方針: 「N秒間は無視する」といった時間ベースのヒューリスティックは
+  // 別のタイミングで同種のレースを再発させうるため採用しない。代わりに、
+  // ポーリング要求の送信とhasOpenCallRequestの楽観的確定の両方が汲み取る
+  // 単一の単調カウンタ（sequenceRef）による厳密な順序関係を導入する。
+  // - ポーリング要求を送信する瞬間（refreshOrderingContext内、await前）に
+  //   その要求自身の順序番号を採番する。
+  // - handleCallStaffがhasOpenCallRequestをtrueへ確定させる瞬間
+  //   （成功/CALL_ALREADY_OPENのいずれも）に、lastCallStateSeqRefへ
+  //   新しい順序番号を採番して記録する。
+  // - ポーリング応答が届いた時点で、その要求が採番された順序番号が
+  //   lastCallStateSeqRef（＝直近の楽観的確定）より前であれば、その応答は
+  //   「楽観的確定より古い時点のサーバー状態」を反映しているに過ぎないと
+  //   判断し、hasOpenCallRequestフィールドだけは上書きせず温存する
+  //   （confirmedTotal等の他フィールドは通常どおり最新化する。真に古い
+  //   のはhasOpenCallRequestという1フィールドの意味だけであるため）。
+  // - 逆に、楽観的確定より"後"に送信されたポーリング要求（sequenceRefは
+  //   単調増加のため、要求送信時点で必ずlastCallStateSeqRefより大きい
+  //   値になる）は、その時点で既にサーバーが呼び出しopenの事実を反映
+  //   できているはずであり、通常どおり適用する。これにより、レジ側が
+  //   対応済みにした後の正当なfalseへの更新は一切ブロックされない
+  //   （「一度でも楽観的更新した後は永久に無視する」といった過剰な抑制には
+  //   ならない設計）。
+  const sequenceRef = useRef(0);
+  const lastCallStateSeqRef = useRef(0);
+
+  /**
+   * handleCallStaffの成功/CALL_ALREADY_OPENの両方から呼ばれる、
+   * hasOpenCallRequestをtrueへ確定させる唯一の経路（上記sequenceRefの
+   * コメント参照）。ここでlastCallStateSeqRefへ新しい順序番号を記録して
+   * から状態を更新することで、この確定より前に送信されていた
+   * ポーリング要求の（古い）応答がこのtrueを巻き戻せないようにする。
+   */
+  const markCallRequestOpen = useCallback(() => {
+    lastCallStateSeqRef.current = ++sequenceRef.current;
+    setView((prev) =>
+      prev.status === "ready" ? { ...prev, hasOpenCallRequest: true } : prev,
+    );
+  }, []);
+
+  /**
+   * 確定注文合計（要件1.12）と呼び出し中表示（要件2.1-2.3）の両方の
+   * ライブ更新を担う背景再取得。6.2で確定した「`getOrderingContext`の
+   * 定期ポーリングに相乗りする」という設計判断（ファイル冒頭コメント参照）を
+   * 6.3のhasOpenCallRequestにもそのまま適用する——新しいポーリングループを
+   * 追加しない（toReadyStateが両フィールドを一括して最新化するため、この
+   * 関数自体は変更不要で、呼び出し元を増やすだけで済む）。
+   *
+   * バックグラウンド再取得（ポーリング/送信成功直後）の失敗は画面を
+   * 壊さないよう握りつぶす。ネットワーク断の明示的なハンドリングは
+   * 注文送信時（handleSubmit）の責務であり、ここでは「次回また
+   * 取得を試みる」という単純なベストエフォートに徹する（要件1.11とは
+   * 別の関心事）。
+   */
+  const refreshOrderingContext = useCallback(async () => {
+    // 上記sequenceRefのコメント参照: この要求"送信"の瞬間（await前）に
+    // 順序番号を採番する。応答が届いた時点でこの値をlastCallStateSeqRef
+    // と比較し、この要求がhandleCallStaffの楽観的確定より前に送信された
+    // ものであれば、その応答のhasOpenCallRequestは古いとみなして温存する。
+    const requestSeq = ++sequenceRef.current;
     try {
       const result = await gateway.getOrderingContext({ tableId });
       if (!result.ok) {
         return;
       }
-      setView((prev) =>
-        prev.status === "ready" ? toReadyState(result.value) : prev,
-      );
+      setView((prev) => {
+        if (prev.status !== "ready") {
+          return prev;
+        }
+        const next = toReadyState(result.value);
+        if (next.status !== "ready") {
+          return next;
+        }
+        if (requestSeq < lastCallStateSeqRef.current) {
+          // この要求は、直近の楽観的確定（handleCallStaff）より前に
+          // 送信されていた。hasOpenCallRequestに関してはその確定より
+          // 古いサーバー状態を反映しているに過ぎないため上書きしない
+          // （他フィールドは通常どおり最新化する）。
+          return { ...next, hasOpenCallRequest: prev.hasOpenCallRequest };
+        }
+        return next;
+      });
     } catch {
       // 上記コメントの通り無視する。
     }
@@ -278,12 +379,12 @@ export default function MenuScreen({ tableId }: MenuScreenProps) {
       return;
     }
     const interval = setInterval(() => {
-      void refreshConfirmedTotal();
+      void refreshOrderingContext();
     }, CONFIRMED_TOTAL_POLL_INTERVAL_MS);
     return () => {
       clearInterval(interval);
     };
-  }, [view.status, refreshConfirmedTotal]);
+  }, [view.status, refreshOrderingContext]);
 
   function handleSelectItem(item: MenuItemView) {
     setSelectedItem(item);
@@ -400,9 +501,76 @@ export default function MenuScreen({ tableId }: MenuScreenProps) {
       // 自端末の送信結果を確定注文合計へ即時反映する（要件1.12。
       // 次回のポーリングtickを待たず、自分の送信は即座に確認できる方が
       // 体験として自然なため、成功直後に明示的な再取得を1回追加する）。
-      void refreshConfirmedTotal();
+      void refreshOrderingContext();
     } catch {
       setSubmission({ kind: "network-error" });
+    }
+  }
+
+  /**
+   * 呼び出しボタン（要件2.1-2.3）のタップハンドラ。
+   *
+   * tasks.md Implementation Notes: customerOrderingGatewayの各メソッドは
+   * ドキュメント化されたエラーコード以外の予期しない失敗（ネットワーク断等）
+   * をResultに含めず例外としてthrowするため、必ずtry/catchで捕捉する。
+   *
+   * 設計判断（design.mdのCallRequestError型注釈、0003_rpc_customer_gateway.sql
+   * 設計判断8のコメント「将来のUIタスク（6.3）は、このエラーを『対応済みに
+   * なるまで再送不可を示す』というソフトな状態表示に変換すればよく、致命的な
+   * 失敗として扱う必要はない」を踏襲）: 成功時とCALL_ALREADY_OPEN時のどちらも
+   * 「今、呼び出しが未対応で存在する」という同じ意味の事実を表すため、
+   * ViewState.hasOpenCallRequestを同じ形でtrueへ楽観的に更新する
+   * （createCallRequestの応答・エラーいずれも「呼び出しは今open」という
+   * 事実を直接示しており、次のポーリングtickを待つ必要がない。6.2の
+   * 「送信成功直後にrefreshOrderingContextを1回追加する」という即時反映の
+   * 考え方と同じ）。対応済みへの遷移（resolved）自体はサーバー側の
+   * 再検証でしか知りえないため、ここでは検知せず既存のポーリング
+   * （refreshOrderingContext、5秒間隔）に委ねる。
+   */
+  async function handleCallStaff() {
+    if (view.status !== "ready" || view.hasOpenCallRequest) {
+      return;
+    }
+
+    setCallState({ kind: "submitting" });
+
+    try {
+      const result = await gateway.createCallRequest({
+        sessionId: view.sessionId,
+      });
+
+      if (!result.ok) {
+        if (result.error.code === "CALL_ALREADY_OPEN") {
+          // 致命的なエラーではない: 客の意図（スタッフに来てほしい）は
+          // 既に満たされている。警告的な文言を出さず、通常の「呼び出し中」
+          // 状態へ収束させる。
+          setCallState({ kind: "idle" });
+          markCallRequestOpen();
+          return;
+        }
+
+        // SESSION_NOT_ACTIVE: ボタンはactiveSessionがある間しか表示されない
+        // ため通常は起こらないが、直前にセッションが終了した場合に発生しうる
+        // （防御的ハンドリング）。専用メッセージを表示しつつ、次のポーリングで
+        // 「ご案内をお待ちください」画面へ正しく遷移できるよう最新状態を
+        // 明示的に取得し直す。
+        setCallState({
+          kind: "error",
+          message:
+            "このご来店セッションは既に終了しています。お手数ですが、スタッフをお呼びください。",
+        });
+        void refreshOrderingContext();
+        return;
+      }
+
+      setCallState({ kind: "idle" });
+      markCallRequestOpen();
+    } catch {
+      setCallState({
+        kind: "error",
+        message:
+          "呼び出しの送信に失敗しました。ネットワーク接続をご確認のうえ、もう一度お試しください。",
+      });
     }
   }
 
@@ -446,7 +614,14 @@ export default function MenuScreen({ tableId }: MenuScreenProps) {
   return (
     <main className="min-h-screen bg-white pb-20">
       <header className="border-b border-neutral-100 px-4 py-3">
-        <h1 className="text-lg font-semibold">注文メニュー</h1>
+        <div className="flex items-start justify-between gap-2">
+          <h1 className="text-lg font-semibold">注文メニュー</h1>
+          <CallButton
+            open={view.hasOpenCallRequest}
+            state={callState}
+            onCall={() => void handleCallStaff()}
+          />
+        </div>
         <div className="mt-1 flex items-center gap-2">
           <span
             data-testid="table-label"

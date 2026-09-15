@@ -162,6 +162,7 @@ describe("customerOrderingGateway（結合テスト、実RPCへの疎通確認�
     });
     expect(result.value.activeSession).toEqual({ id: activeSessionId });
     expect(result.value.confirmedTotal).toBe(0);
+    expect(result.value.hasOpenCallRequest).toBe(false);
     const item = result.value.menu.find((m) => m.id === menuItemId);
     expect(item).toMatchObject({
       id: menuItemId,
@@ -297,6 +298,17 @@ describe("customerOrderingGateway（結合テスト、実RPCへの疎通確認�
     expect(result.value.status).toBe("open");
     expect(typeof result.value.id).toBe("string");
     expect(typeof result.value.createdAt).toBe("string");
+
+    // ラッパー経由でも、getOrderingContext.hasOpenCallRequest（タスク6.3）が
+    // 直前に成功したcreateCallRequestを正しく反映することを確認する
+    // （個々のRPC・ラッパーメソッドは別々にテスト済みだが、両者を跨いだ
+    // 整合性はこのように組み合わせて呼び出すことでしか確認できない）。
+    const context = await gateway.getOrderingContext({
+      tableId: tableActiveId,
+    });
+    expect(context.ok).toBe(true);
+    if (!context.ok) return;
+    expect(context.value.hasOpenCallRequest).toBe(true);
   });
 
   it("createCallRequest: 未対応の呼び出しが既にある場合はCALL_ALREADY_OPEN（design.md通り追加ペイロードなし）エラーになる", async () => {

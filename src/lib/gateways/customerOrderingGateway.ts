@@ -65,6 +65,28 @@ import { type Result, ok, err } from "../result";
  * get_ordering_contextの応答へ`genre`を追加し（既存キーの形状変更なし、
  * 関数シグネチャも不変の追加的変更）、本ファイルのMenuItemViewにも
  * 反映した。design.md本文（MenuItemView型定義）も合わせて更新済み。
+ *
+ * ## OrderingContext.hasOpenCallRequestについて（タスク6.3で追加）
+ * design.mdのOrderingContext型は当初（タスク3.1/3.4時点）table/
+ * activeSession/confirmedTotal/menuのみを持ち、呼び出し（call_requests）の
+ * 状態を一切含んでいなかった。タスク6.3（呼び出しボタンUI）の実装着手時、
+ * 「レジが呼び出しに対応済みにしたことを、客の画面がどうやって知るか」という
+ * ギャップが判明した（createCallRequestの直接応答は送信直後の「呼び出し中」
+ * 判定にしか使えず、対応済みへの遷移を検知する手段が無かった）。
+ * 0010_ordering_context_call_request.sqlでget_ordering_contextの応答へ
+ * `hasOpenCallRequest`を追加し（既存キーの形状変更なし、関数シグネチャも
+ * 不変の追加的変更）、本ファイルのOrderingContextにも反映した。design.md
+ * 本文（OrderingContext型定義）も合わせて更新済み。
+ *
+ * 設計判断（design.mdのSecurity Considerations「クライアントの表示状態を
+ * 信用しない」という一貫方針に従う）: 対応済みへの遷移をクライアント側の
+ * ローカル状態だけで推測せず、6.2で確立済みの`getOrderingContext`定期
+ * ポーリング（`anon`にRealtimeのSELECT権限を広げないための既存の設計、
+ * 0008_realtime_publication.sql参照）にそのまま相乗りしてサーバー側の
+ * 真の状態を再取得する。フィールド名はStaffOperationsGateway.
+ * listRegisterFeedが返すTableBillingSummary.hasOpenCallRequest
+ * （design.md、4.5で実装済み）と全く同じ意味・同じ名前を踏襲する
+ * （新しい語彙を増やさない）。
  */
 
 // ===========================================================================
@@ -79,6 +101,12 @@ export interface OrderingContext {
   table: { id: string; label: string };
   activeSession: { id: string } | null;
   confirmedTotal: number;
+  /**
+   * 対象セッションに未対応(open)の呼び出し（call_requests）が存在するか。
+   * アクティブセッションが無い場合は常にfalse（タスク6.3で追加、
+   * 0010_ordering_context_call_request.sql参照）。
+   */
+  hasOpenCallRequest: boolean;
   menu: ReadonlyArray<MenuItemView>;
 }
 
@@ -262,6 +290,7 @@ function toOrderingContext(data: Json): OrderingContext {
     table: { id: string; label: string };
     activeSession: { id: string } | null;
     confirmedTotal: number;
+    hasOpenCallRequest: boolean;
     menu: ReadonlyArray<{
       id: string;
       name: string;
@@ -277,6 +306,7 @@ function toOrderingContext(data: Json): OrderingContext {
     table: { id: raw.table.id, label: raw.table.label },
     activeSession: raw.activeSession ? { id: raw.activeSession.id } : null,
     confirmedTotal: raw.confirmedTotal,
+    hasOpenCallRequest: raw.hasOpenCallRequest,
     menu: raw.menu.map((item) => ({
       id: item.id,
       name: item.name,
