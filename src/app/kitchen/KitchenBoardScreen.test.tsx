@@ -107,9 +107,12 @@ describe("KitchenBoardScreen", () => {
       const soldoutTab = screen.getByRole("tab", { name: "売り切れボード" });
 
       fireEvent.click(drinkTab);
-      expect(screen.getByTestId("kitchen-board-placeholder")).toHaveTextContent(
-        "ドリンクボード（実装は7.3）",
-      );
+      // タスク7.3でドリンクボードのプレースホルダーはDrinkBoardへ置き換わった。
+      // DrinkBoard自体の中身の検証（ジャンル絞り込み・並び順保持・カード
+      // 表示等）はDrinkBoard.test.tsxが専用に担うため、ここではKitchenBoard
+      // Screenの責務——正しいタブ選択状態でDrinkBoardがマウントされること
+      // ——のみを検証する。
+      expect(await screen.findByTestId("drink-board")).toBeInTheDocument();
       expect(screen.queryByTestId("food-board")).not.toBeInTheDocument();
       expect(drinkTab).toHaveAttribute("aria-selected", "true");
       expect(foodTab).toHaveAttribute("aria-selected", "false");
@@ -118,9 +121,7 @@ describe("KitchenBoardScreen", () => {
       expect(screen.getByTestId("kitchen-board-placeholder")).toHaveTextContent(
         "売り切れボード（実装は7.4）",
       );
-      expect(
-        screen.queryByText("ドリンクボード（実装は7.3）"),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByTestId("drink-board")).not.toBeInTheDocument();
       expect(soldoutTab).toHaveAttribute("aria-selected", "true");
 
       fireEvent.click(foodTab);

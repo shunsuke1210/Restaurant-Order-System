@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { ensureDeviceSession } from "@/lib/device/useDeviceIdentity";
 import KitchenTabs, { KITCHEN_TABS, type KitchenTabId } from "./KitchenTabs";
 import FoodBoard from "./FoodBoard";
+import DrinkBoard from "./DrinkBoard";
 
 /**
  * 厨房KDS画面の実体（design.md「KitchenBoard」コンポーネント）。
@@ -31,6 +32,12 @@ import FoodBoard from "./FoodBoard";
  * `view.status === "ready"`（＝kitchenロールのデバイスセッション確立済み）
  * の場合にのみマウントされ、`ensureDeviceSession`が返した
  * `DeviceIdentity.storeId`をpropsとして受け取る。
+ *
+ * ## タスク7.3での更新: ドリンクボードタブの実データ表示への置き換え
+ * 7.3は「ドリンクボードの実データ表示」を実装する（売り切れは引き続き
+ * プレースホルダーのまま、7.4のスコープ）。"drink"タブ選択中は、7.1時点の
+ * プレースホルダー文言の代わりに`DrinkBoard`（`./DrinkBoard.tsx`）へ
+ * 委譲する。配線方法・propsは"food"タブの`FoodBoard`と全く同型。
  *
  * ## デバイスセッション確認について（タスク9.1との役割分担）
  * `/kitchen`はデバイス識別基盤（タスク2.1-2.3）が要求するkitchen-role
@@ -78,13 +85,13 @@ const WRONG_ROLE_MESSAGE =
 const GENERIC_DEVICE_ERROR_MESSAGE =
   "デバイスの確認中に予期しないエラーが発生しました。ネットワーク接続をご確認のうえ、画面を再読み込みしてください。";
 
-// "food"は7.2でFoodBoard（実データ表示）へ置き換え済みのため対象外
-// （下記レンダリング分岐参照）。ドリンク/売り切れは引き続き7.3/7.4が
-// 実装するまでの簡易プレースホルダー文言のみ。
-const PLACEHOLDER_TEXT: Record<Exclude<KitchenTabId, "food">, string> = {
-  drink: "ドリンクボード（実装は7.3）",
-  soldout: "売り切れボード（実装は7.4）",
-};
+// "food"は7.2でFoodBoard、"drink"は7.3でDrinkBoard（いずれも実データ表示）
+// へ置き換え済みのため対象外（下記レンダリング分岐参照）。売り切れは
+// 引き続き7.4が実装するまでの簡易プレースホルダー文言のみ。
+const PLACEHOLDER_TEXT: Record<Exclude<KitchenTabId, "food" | "drink">, string> =
+  {
+    soldout: "売り切れボード（実装は7.4）",
+  };
 
 export default function KitchenBoardScreen() {
   const [view, setView] = useState<ViewState>({ status: "checking-device" });
@@ -181,6 +188,8 @@ export default function KitchenBoardScreen() {
       >
         {activeTab === "food" ? (
           <FoodBoard storeId={view.storeId} />
+        ) : activeTab === "drink" ? (
+          <DrinkBoard storeId={view.storeId} />
         ) : (
           <p
             data-testid="kitchen-board-placeholder"
