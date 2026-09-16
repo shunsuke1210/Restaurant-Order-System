@@ -8,6 +8,8 @@ import {
 } from "@/lib/gateways/staffOperationsGateway";
 import type { OrderItemStatus } from "@/lib/gateways/customerOrderingGateway";
 import type { KitchenFeedItem } from "./FoodBoard";
+import { useAdvanceOrderItemStatus } from "./useAdvanceOrderItemStatus";
+import OrderItemStatusActions from "./OrderItemStatusActions";
 
 /**
  * ドリンクボード（design.md「KitchenBoard」のドリンクボードタブ実体）。
@@ -70,6 +72,13 @@ import type { KitchenFeedItem } from "./FoodBoard";
  * 「更新方式についての設計判断（マウント時フェッチ + 簡易ポーリング）」を
  * そのまま踏襲する（同一の設計判断であり、ここでの再説明は省略する）。
  * `useRealtimeFeed`の配線・接続断表示はタスク7.6のスコープのまま。
+ *
+ * ## タスク7.5での更新: ステータス更新操作と即時反映
+ * FoodBoard.tsx冒頭コメント「タスク7.5での更新」と同じ設計判断・同じ共有
+ * フック（`useAdvanceOrderItemStatus`）・同じ描画コンポーネント
+ * （`OrderItemStatusActions`）を利用する。ドリンクジャンルではreceived→done
+ * の1操作のみで、一品のような直接完了ショートカットは存在しない
+ * （OrderItemStatusActions.tsxの`resolveActions`がジャンルごとに分岐する）。
  */
 export const DRINK_BOARD_POLL_INTERVAL_MS = 5000;
 
@@ -152,6 +161,25 @@ export default function DrinkBoard({ storeId }: DrinkBoardProps) {
   );
   const [state, setState] = useState<BoardState>({ status: "loading" });
 
+  // タスク7.5: ステータス更新後の即時反映用。FoodBoard.tsxの`updateItems`と
+  // 同じ方針（"ready"の場合のみマージする）。
+  function updateItems(
+    updater: (
+      prev: ReadonlyArray<KitchenFeedItem>,
+    ) => ReadonlyArray<KitchenFeedItem>,
+  ) {
+    setState((prev) =>
+      prev.status === "ready"
+        ? { status: "ready", items: updater(prev.items) }
+        : prev,
+    );
+  }
+
+  const { advance, pendingItemId, actionError } = useAdvanceOrderItemStatus(
+    gateway,
+    updateItems,
+  );
+
   useEffect(() => {
     let cancelled = false;
 
@@ -220,54 +248,74 @@ export default function DrinkBoard({ storeId }: DrinkBoardProps) {
   const grouped = groupByStatus(state.items);
 
   return (
-    <div data-testid="drink-board" className="grid grid-cols-2 gap-2 p-2">
-      {COLUMNS.map((column) => {
-        const columnItems = grouped[column.key];
-        return (
-          <div key={column.key}>
-            <div
-              className={`rounded px-2 py-1 text-center text-xs font-bold ${column.headClassName}`}
-            >
-              {column.title}（{columnItems.length}）
-            </div>
-            <div
-              data-testid={`drink-board-column-${column.key}`}
-              className="mt-2 flex flex-col gap-2"
-            >
-              {columnItems.length === 0 ? (
-                <p className="py-3 text-center text-xs text-neutral-400">
-                  なし
-                </p>
-              ) : (
-                columnItems.map((item) => (
-                  <div
-                    key={item.id}
-                    data-testid="drink-board-card"
-                    className="flex flex-col gap-1 rounded-lg border border-neutral-200 bg-white p-2 text-xs shadow-sm"
-                  >
-                    <div className="flex items-baseline justify-between gap-2">
-                      <span className="font-bold text-neutral-900">
-                        {item.tableLabel}
-                      </span>
-                      <span
-                        data-testid="drink-board-card-time"
-                        className="shrink-0 font-mono text-[10px] tabular-nums text-neutral-400"
-                      >
-                        {formatClock(item.statusUpdatedAt)}
-                      </span>
+    <div className="flex flex-col gap-2 p-2">
+      {actionError ? (
+        <p
+          role="alert"
+          data-testid="drink-board-action-error"
+          className="text-xs text-red-600"
+        >
+          {actionError}
+        </p>
+      ) : null}
+      <div data-testid="drink-board" className="grid grid-cols-2 gap-2">
+        {COLUMNS.map((column) => {
+          const columnItems = grouped[column.key];
+          return (
+            <div key={column.key}>
+              <div
+                className={`rounded px-2 py-1 text-center text-xs font-bold ${column.headClassName}`}
+              >
+                {column.title}（{columnItems.length}）
+              </div>
+              <div
+                data-testid={`drink-board-column-${column.key}`}
+                className="mt-2 flex flex-col gap-2"
+              >
+                {columnItems.length === 0 ? (
+                  <p className="py-3 text-center text-xs text-neutral-400">
+                    なし
+                  </p>
+                ) : (
+                  columnItems.map((item) => (
+                    <div
+                      key={item.id}
+                      data-testid="drink-board-card"
+                      className="flex flex-col gap-1 rounded-lg border border-neutral-200 bg-white p-2 text-xs shadow-sm"
+                    >
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="font-bold text-neutral-900">
+                          {item.tableLabel}
+                        </span>
+                        <span
+                          data-testid="drink-board-card-time"
+                          className="shrink-0 font-mono text-[10px] tabular-nums text-neutral-400"
+                        >
+                          {formatClock(item.statusUpdatedAt)}
+                        </span>
+                      </div>
+                      <div className="leading-relaxed text-neutral-600">
+                        {item.name}
+                        {item.optionsSummary
+                          ? `（${item.optionsSummary}）`
+                          : ""}{" "}
+                        ×{item.quantity}
+                      </div>
+                      <OrderItemStatusActions
+                        item={item}
+                        pending={pendingItemId === item.id}
+                        onAdvance={(target, nextStatus) =>
+                          void advance(target, nextStatus)
+                        }
+                      />
                     </div>
-                    <div className="leading-relaxed text-neutral-600">
-                      {item.name}
-                      {item.optionsSummary ? `（${item.optionsSummary}）` : ""}{" "}
-                      ×{item.quantity}
-                    </div>
-                  </div>
-                ))
-              )}
+                  ))
+                )}
+              </div>
             </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 }

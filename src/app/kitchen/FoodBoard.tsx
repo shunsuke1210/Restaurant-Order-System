@@ -10,6 +10,8 @@ import type {
   OrderItemStatus,
   OrderItemSummary,
 } from "@/lib/gateways/customerOrderingGateway";
+import { useAdvanceOrderItemStatus } from "./useAdvanceOrderItemStatus";
+import OrderItemStatusActions from "./OrderItemStatusActions";
 
 /**
  * フードボード（design.md「KitchenBoard」のフードボードタブ実体）。
@@ -78,6 +80,17 @@ import type {
  * 失敗は画面を壊さないよう握りつぶす（`MenuScreen.tsx`の
  * `refreshOrderingContext`と同じ方針）。初回読み込みの失敗のみ、
  * 明示的なエラー表示に反映する。
+ *
+ * ## タスク7.5での更新: ステータス更新操作と即時反映
+ * 7.5は各カードへステータス更新ボタン（`OrderItemStatusActions`）を追加し、
+ * クリック時の`updateOrderItemStatus`呼び出し・成功時のローカル状態への
+ * 即時マージ（次回ポーリングを待たない反映）・失敗時の案内表示を
+ * `useAdvanceOrderItemStatus`（本ディレクトリの共有フック、DrinkBoard.tsxと
+ * 共通利用）へ委譲する。要件6.5に確認モーダルの言及が無いため
+ * （SoldOutBoard.tsx・要件7.1/7.3の売り切れ登録/解除との意図的な非対称性、
+ * useAdvanceOrderItemStatus.ts冒頭コメント参照）、確認ステップは一切
+ * 経由しない。ボタン構成・文言（食/一品/ドリンクのジャンル別の差異、一品の
+ * 直接完了ショートカット）はOrderItemStatusActions.tsx冒頭コメント参照。
  */
 export const FOOD_BOARD_POLL_INTERVAL_MS = 5000;
 
@@ -188,6 +201,26 @@ export default function FoodBoard({ storeId }: FoodBoardProps) {
   );
   const [state, setState] = useState<BoardState>({ status: "loading" });
 
+  // タスク7.5: ステータス更新後の即時反映用。`state`が"ready"の場合のみ
+  // 該当品目をマージする（読み込み中/エラー中はupdateItems自体を
+  // useAdvanceOrderItemStatusから呼び出す機会が無いため、事実上到達しない）。
+  function updateItems(
+    updater: (
+      prev: ReadonlyArray<KitchenFeedItem>,
+    ) => ReadonlyArray<KitchenFeedItem>,
+  ) {
+    setState((prev) =>
+      prev.status === "ready"
+        ? { status: "ready", items: updater(prev.items) }
+        : prev,
+    );
+  }
+
+  const { advance, pendingItemId, actionError } = useAdvanceOrderItemStatus(
+    gateway,
+    updateItems,
+  );
+
   // MenuScreen.tsx（6.2）が確立した既存パターン——マウント時の初回取得と
   // 背景ポーリングを、1つのuseEffect内でローカルに定義した非同期関数として
   // まとめ、`cancelled`フラグでアンマウント後のsetStateを防ぐ——をそのまま
@@ -263,66 +296,86 @@ export default function FoodBoard({ storeId }: FoodBoardProps) {
   const grouped = groupByStatus(state.items);
 
   return (
-    <div data-testid="food-board" className="grid grid-cols-5 gap-2 p-2">
-      {COLUMNS.map((column) => {
-        const columnItems = grouped[column.key];
-        return (
-          <div
-            key={column.key}
-            className={column.wide ? "col-span-2" : "col-span-1"}
-          >
+    <div className="flex flex-col gap-2 p-2">
+      {actionError ? (
+        <p
+          role="alert"
+          data-testid="food-board-action-error"
+          className="text-xs text-red-600"
+        >
+          {actionError}
+        </p>
+      ) : null}
+      <div data-testid="food-board" className="grid grid-cols-5 gap-2">
+        {COLUMNS.map((column) => {
+          const columnItems = grouped[column.key];
+          return (
             <div
-              className={`rounded px-2 py-1 text-center text-xs font-bold ${column.headClassName}`}
+              key={column.key}
+              className={column.wide ? "col-span-2" : "col-span-1"}
             >
-              {column.title}（{columnItems.length}）
-            </div>
-            <div
-              data-testid={`food-board-column-${column.key}`}
-              className={
-                column.wide
-                  ? "mt-2 grid grid-cols-2 gap-2"
-                  : "mt-2 flex flex-col gap-2"
-              }
-            >
-              {columnItems.length === 0 ? (
-                <p className="py-3 text-center text-xs text-neutral-400">
-                  なし
-                </p>
-              ) : (
-                columnItems.map((item) => (
-                  <div
-                    key={item.id}
-                    data-testid="food-board-card"
-                    className="flex flex-col gap-1 rounded-lg border border-neutral-200 bg-white p-2 text-xs shadow-sm"
-                  >
-                    <div className="flex items-baseline justify-between gap-2">
-                      <span className="font-bold text-neutral-900">
-                        {item.tableLabel}
-                        {item.genre === "ippin" ? (
-                          <span className="ml-1 rounded bg-blue-100 px-1 py-0.5 text-[10px] font-semibold text-blue-700">
-                            一品
-                          </span>
-                        ) : null}
-                      </span>
-                      <span
-                        data-testid="food-board-card-time"
-                        className="shrink-0 font-mono text-[10px] tabular-nums text-neutral-400"
-                      >
-                        {formatClock(item.statusUpdatedAt)}
-                      </span>
+              <div
+                className={`rounded px-2 py-1 text-center text-xs font-bold ${column.headClassName}`}
+              >
+                {column.title}（{columnItems.length}）
+              </div>
+              <div
+                data-testid={`food-board-column-${column.key}`}
+                className={
+                  column.wide
+                    ? "mt-2 grid grid-cols-2 gap-2"
+                    : "mt-2 flex flex-col gap-2"
+                }
+              >
+                {columnItems.length === 0 ? (
+                  <p className="py-3 text-center text-xs text-neutral-400">
+                    なし
+                  </p>
+                ) : (
+                  columnItems.map((item) => (
+                    <div
+                      key={item.id}
+                      data-testid="food-board-card"
+                      className="flex flex-col gap-1 rounded-lg border border-neutral-200 bg-white p-2 text-xs shadow-sm"
+                    >
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="font-bold text-neutral-900">
+                          {item.tableLabel}
+                          {item.genre === "ippin" ? (
+                            <span className="ml-1 rounded bg-blue-100 px-1 py-0.5 text-[10px] font-semibold text-blue-700">
+                              一品
+                            </span>
+                          ) : null}
+                        </span>
+                        <span
+                          data-testid="food-board-card-time"
+                          className="shrink-0 font-mono text-[10px] tabular-nums text-neutral-400"
+                        >
+                          {formatClock(item.statusUpdatedAt)}
+                        </span>
+                      </div>
+                      <div className="leading-relaxed text-neutral-600">
+                        {item.name}
+                        {item.optionsSummary
+                          ? `（${item.optionsSummary}）`
+                          : ""}{" "}
+                        ×{item.quantity}
+                      </div>
+                      <OrderItemStatusActions
+                        item={item}
+                        pending={pendingItemId === item.id}
+                        onAdvance={(target, nextStatus) =>
+                          void advance(target, nextStatus)
+                        }
+                      />
                     </div>
-                    <div className="leading-relaxed text-neutral-600">
-                      {item.name}
-                      {item.optionsSummary ? `（${item.optionsSummary}）` : ""}{" "}
-                      ×{item.quantity}
-                    </div>
-                  </div>
-                ))
-              )}
+                  ))
+                )}
+              </div>
             </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 }

@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
-import DrinkBoard from "./DrinkBoard";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import DrinkBoard, { DRINK_BOARD_POLL_INTERVAL_MS } from "./DrinkBoard";
 import type { KitchenFeedItem } from "./FoodBoard";
 
 // DrinkBoard（タスク7.3、ドリンクボードの2分割カンバン）のコンポーネントテスト。
@@ -16,10 +16,13 @@ import type { KitchenFeedItem } from "./FoodBoard";
 // Requirements: 6.4, 6.8
 
 const mockListKitchenFeed = vi.fn();
+const mockUpdateOrderItemStatus = vi.fn();
 
 vi.mock("@/lib/gateways/staffOperationsGateway", () => ({
   createStaffOperationsGateway: () => ({
     listKitchenFeed: (...args: unknown[]) => mockListKitchenFeed(...args),
+    updateOrderItemStatus: (...args: unknown[]) =>
+      mockUpdateOrderItemStatus(...args),
   }),
 }));
 
@@ -55,6 +58,7 @@ describe("DrinkBoard", () => {
   beforeEach(() => {
     idCounter = 0;
     mockListKitchenFeed.mockReset();
+    mockUpdateOrderItemStatus.mockReset();
   });
 
   it("ドリンクジャンルの品目のみをstatusごとの列へ表示し、フード/一品品目は除外する", async () => {
@@ -233,5 +237,152 @@ describe("DrinkBoard", () => {
       "厨房データの取得に失敗しました",
     );
     expect(screen.queryByTestId("drink-board")).not.toBeInTheDocument();
+  });
+});
+
+// =========================================================================
+// タスク7.5: ステータス更新操作と即時反映
+// Requirements: 6.1, 6.2, 6.5
+//
+// FoodBoard.test.tsx（タスク7.5ブロック）冒頭コメントと同じ前提——要件6.5に
+// 確認モーダルの言及が無いため、クリック直後に確認ステップ無しで
+// updateOrderItemStatusを呼び出すことを検証する。ドリンクはreceived→done
+// の1操作のみで、一品のような直接完了ショートカットは存在しない。
+// =========================================================================
+
+describe("DrinkBoard（タスク7.5: ステータス更新操作と即時反映）", () => {
+  beforeEach(() => {
+    idCounter = 0;
+    mockListKitchenFeed.mockReset();
+    mockUpdateOrderItemStatus.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("未対応カードには「対応完了」ボタンのみが表示される", async () => {
+    const item = makeItem({ name: "レモンサワー", status: "received" });
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [item] });
+
+    render(<DrinkBoard storeId="store-1" />);
+
+    const card = (await screen.findAllByTestId("drink-board-card"))[0];
+    expect(
+      within(card).getByRole("button", { name: "対応完了" }),
+    ).toBeInTheDocument();
+  });
+
+  it("対応済みカードにはステータス更新ボタンが一切表示されない", async () => {
+    const item = makeItem({ name: "生ビール", status: "done" });
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [item] });
+
+    render(<DrinkBoard storeId="store-1" />);
+
+    const card = (await screen.findAllByTestId("drink-board-card"))[0];
+    expect(within(card).queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("「対応完了」クリックで確認なしに直接updateOrderItemStatusを呼び出す（要件6.5: 確認モーダルは存在しない）", async () => {
+    const item = makeItem({ name: "レモンサワー", status: "received" });
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [item] });
+    mockUpdateOrderItemStatus.mockResolvedValue({
+      ok: true,
+      value: { ...item, status: "done" },
+    });
+
+    render(<DrinkBoard storeId="store-1" />);
+
+    const card = (await screen.findAllByTestId("drink-board-card"))[0];
+    fireEvent.click(within(card).getByRole("button", { name: "対応完了" }));
+
+    expect(mockUpdateOrderItemStatus).toHaveBeenCalledWith({
+      orderItemId: item.id,
+      status: "done",
+    });
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("更新成功直後（次回ポーリングを待たず）に該当カードが対応済み列へ移動する（本タスクの観測可能な完了条件）", async () => {
+    vi.useFakeTimers();
+    const item = makeItem({ name: "レモンサワー", status: "received" });
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [item] });
+    mockUpdateOrderItemStatus.mockResolvedValue({
+      ok: true,
+      value: {
+        ...item,
+        status: "done",
+        statusUpdatedAt: "2026-01-01T03:20:00.000Z",
+      },
+    });
+
+    render(<DrinkBoard storeId="store-1" />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    fireEvent.click(
+      within(screen.getByTestId("drink-board-column-received")).getByRole(
+        "button",
+        { name: "対応完了" },
+      ),
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(mockListKitchenFeed).toHaveBeenCalledTimes(1);
+
+    const doneColumn = screen.getByTestId("drink-board-column-done");
+    expect(within(doneColumn).getByText(/レモンサワー/)).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("drink-board-column-received")).queryByText(
+        /レモンサワー/,
+      ),
+    ).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DRINK_BOARD_POLL_INTERVAL_MS);
+    });
+    expect(mockListKitchenFeed).toHaveBeenCalledTimes(2);
+  });
+
+  it("updateOrderItemStatusが業務エラー（他端末との競合によるINVALID_TRANSITION）を返してもクラッシュせず、カードは元の列に留まる", async () => {
+    const item = makeItem({ name: "レモンサワー", status: "received" });
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [item] });
+    mockUpdateOrderItemStatus.mockResolvedValue({
+      ok: false,
+      error: { code: "INVALID_TRANSITION", from: "done", to: "done" },
+    });
+
+    render(<DrinkBoard storeId="store-1" />);
+
+    const card = (await screen.findAllByTestId("drink-board-card"))[0];
+    fireEvent.click(within(card).getByRole("button", { name: "対応完了" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "ステータスの更新に失敗しました",
+    );
+    expect(
+      within(screen.getByTestId("drink-board-column-received")).getByText(
+        /レモンサワー/,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("updateOrderItemStatusが例外を投げても（ドキュメント化されていない失敗）クラッシュせず案内する", async () => {
+    const item = makeItem({ name: "レモンサワー", status: "received" });
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [item] });
+    mockUpdateOrderItemStatus.mockRejectedValue(new Error("network error"));
+
+    render(<DrinkBoard storeId="store-1" />);
+
+    const card = (await screen.findAllByTestId("drink-board-card"))[0];
+    fireEvent.click(within(card).getByRole("button", { name: "対応完了" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "ステータスの更新に失敗しました",
+    );
   });
 });

@@ -1,6 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
-import FoodBoard, { type KitchenFeedItem } from "./FoodBoard";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import FoodBoard, {
+  FOOD_BOARD_POLL_INTERVAL_MS,
+  type KitchenFeedItem,
+} from "./FoodBoard";
 
 // FoodBoard（タスク7.2、フードボードの5分割カンバン・一品優先表示）の
 // コンポーネントテスト。staffOperationsGatewayをモックし、実DBには接続
@@ -15,10 +18,13 @@ import FoodBoard, { type KitchenFeedItem } from "./FoodBoard";
 // Requirements: 6.3, 6.6, 6.7, 6.8, 6.10
 
 const mockListKitchenFeed = vi.fn();
+const mockUpdateOrderItemStatus = vi.fn();
 
 vi.mock("@/lib/gateways/staffOperationsGateway", () => ({
   createStaffOperationsGateway: () => ({
     listKitchenFeed: (...args: unknown[]) => mockListKitchenFeed(...args),
+    updateOrderItemStatus: (...args: unknown[]) =>
+      mockUpdateOrderItemStatus(...args),
   }),
 }));
 
@@ -54,6 +60,7 @@ describe("FoodBoard", () => {
   beforeEach(() => {
     idCounter = 0;
     mockListKitchenFeed.mockReset();
+    mockUpdateOrderItemStatus.mockReset();
   });
 
   it("フード/一品ジャンルの品目のみをstatusごとの列へ表示し、ドリンク品目は除外する", async () => {
@@ -201,5 +208,244 @@ describe("FoodBoard", () => {
       "厨房データの取得に失敗しました",
     );
     expect(screen.queryByTestId("food-board")).not.toBeInTheDocument();
+  });
+});
+
+// =========================================================================
+// タスク7.5: ステータス更新操作と即時反映
+// Requirements: 6.1, 6.2, 6.5, 6.6
+//
+// 要件6.5「厨房スタッフが品目のステータスを更新する、厨房KDSサービスは
+// 更新結果を画面に即座に反映する」には確認モーダルの言及が一切無い
+// （要件7.1/7.3の売り切れ登録・解除とは異なる）ため、本テスト群は
+// クリック直後にupdateOrderItemStatusが呼ばれ、確認ステップを一切
+// 経由しないことを前提に検証する。
+// =========================================================================
+
+describe("FoodBoard（タスク7.5: ステータス更新操作と即時反映）", () => {
+  beforeEach(() => {
+    idCounter = 0;
+    mockListKitchenFeed.mockReset();
+    mockUpdateOrderItemStatus.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("food/未対応カードには「調理開始」ボタンのみが表示される（直接完了ショートカットは無い）", async () => {
+    const item = makeItem({ name: "唐揚げ", genre: "food", status: "received" });
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [item] });
+
+    render(<FoodBoard storeId="store-1" />);
+
+    const card = (await screen.findAllByTestId("food-board-card"))[0];
+    expect(within(card).getByRole("button", { name: "調理開始" })).toBeInTheDocument();
+    expect(
+      within(card).queryByRole("button", { name: "直接完了" }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(card).queryByRole("button", { name: "調理完了" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("food/調理中カードには「調理完了」ボタンのみが表示される", async () => {
+    const item = makeItem({
+      name: "唐揚げ",
+      genre: "food",
+      status: "in_progress",
+    });
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [item] });
+
+    render(<FoodBoard storeId="store-1" />);
+
+    const card = (await screen.findAllByTestId("food-board-card"))[0];
+    expect(within(card).getByRole("button", { name: "調理完了" })).toBeInTheDocument();
+    expect(
+      within(card).queryByRole("button", { name: "調理開始" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("一品/未対応カードには「調理開始」と「直接完了」の両方のボタンが表示される（要件6.6）", async () => {
+    const item = makeItem({ name: "冷奴", genre: "ippin", status: "received" });
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [item] });
+
+    render(<FoodBoard storeId="store-1" />);
+
+    const card = (await screen.findAllByTestId("food-board-card"))[0];
+    expect(within(card).getByRole("button", { name: "調理開始" })).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "直接完了" })).toBeInTheDocument();
+  });
+
+  it("一品/調理中カードには「調理完了」ボタンのみが表示される（直接完了ショートカットは未対応列のみ）", async () => {
+    const item = makeItem({
+      name: "冷奴",
+      genre: "ippin",
+      status: "in_progress",
+    });
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [item] });
+
+    render(<FoodBoard storeId="store-1" />);
+
+    const card = (await screen.findAllByTestId("food-board-card"))[0];
+    expect(within(card).getByRole("button", { name: "調理完了" })).toBeInTheDocument();
+    expect(
+      within(card).queryByRole("button", { name: "直接完了" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("調理完了カードにはステータス更新ボタンが一切表示されない", async () => {
+    const item = makeItem({ name: "焼き鳥", genre: "food", status: "done" });
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [item] });
+
+    render(<FoodBoard storeId="store-1" />);
+
+    const card = (await screen.findAllByTestId("food-board-card"))[0];
+    expect(within(card).queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("「調理開始」クリックで確認なしに直接updateOrderItemStatusを呼び出す（要件6.5: 確認モーダルは存在しない）", async () => {
+    const item = makeItem({
+      name: "唐揚げ",
+      genre: "food",
+      status: "received",
+    });
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [item] });
+    mockUpdateOrderItemStatus.mockResolvedValue({
+      ok: true,
+      value: { ...item, status: "in_progress" },
+    });
+
+    render(<FoodBoard storeId="store-1" />);
+
+    const card = (await screen.findAllByTestId("food-board-card"))[0];
+    fireEvent.click(within(card).getByRole("button", { name: "調理開始" }));
+
+    // 確認モーダルを一切経由しない（クリック直後に呼び出し済み）。
+    expect(mockUpdateOrderItemStatus).toHaveBeenCalledWith({
+      orderItemId: item.id,
+      status: "in_progress",
+    });
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("一品の「直接完了」クリックで、statusをdoneとして直接updateOrderItemStatusを呼び出す（要件6.6のRPC引数）", async () => {
+    const item = makeItem({ name: "冷奴", genre: "ippin", status: "received" });
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [item] });
+    mockUpdateOrderItemStatus.mockResolvedValue({
+      ok: true,
+      value: { ...item, status: "done" },
+    });
+
+    render(<FoodBoard storeId="store-1" />);
+
+    const card = (await screen.findAllByTestId("food-board-card"))[0];
+    fireEvent.click(within(card).getByRole("button", { name: "直接完了" }));
+
+    expect(mockUpdateOrderItemStatus).toHaveBeenCalledWith({
+      orderItemId: item.id,
+      status: "done",
+    });
+  });
+
+  it("更新成功直後（次回ポーリングを待たず）に該当カードが新しい列へ移動する（本タスクの観測可能な完了条件）", async () => {
+    vi.useFakeTimers();
+    const item = makeItem({
+      name: "唐揚げ",
+      genre: "food",
+      status: "received",
+    });
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [item] });
+    mockUpdateOrderItemStatus.mockResolvedValue({
+      ok: true,
+      value: {
+        ...item,
+        status: "in_progress",
+        statusUpdatedAt: "2026-01-01T03:20:00.000Z",
+      },
+    });
+
+    render(<FoodBoard storeId="store-1" />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    const receivedColumnBefore = screen.getByTestId(
+      "food-board-column-received",
+    );
+    fireEvent.click(
+      within(receivedColumnBefore).getByRole("button", { name: "調理開始" }),
+    );
+
+    // updateOrderItemStatusのPromise解決分のみを流し、ポーリング間隔は
+    // 一切進めない（＝ポーリングの次tickを待たずに反映されることの証明）。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(mockListKitchenFeed).toHaveBeenCalledTimes(1);
+
+    const inProgressColumn = screen.getByTestId(
+      "food-board-column-in_progress",
+    );
+    expect(within(inProgressColumn).getByText(/唐揚げ/)).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("food-board-column-received")).queryByText(
+        /唐揚げ/,
+      ),
+    ).not.toBeInTheDocument();
+
+    // ポーリングが実際にも起動していること自体は健全性確認として残す。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(FOOD_BOARD_POLL_INTERVAL_MS);
+    });
+    expect(mockListKitchenFeed).toHaveBeenCalledTimes(2);
+  });
+
+  it("updateOrderItemStatusが業務エラー（他端末との競合によるINVALID_TRANSITION）を返してもクラッシュせず、カードは元の列に留まる", async () => {
+    const item = makeItem({
+      name: "唐揚げ",
+      genre: "food",
+      status: "received",
+    });
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [item] });
+    mockUpdateOrderItemStatus.mockResolvedValue({
+      ok: false,
+      error: { code: "INVALID_TRANSITION", from: "in_progress", to: "in_progress" },
+    });
+
+    render(<FoodBoard storeId="store-1" />);
+
+    const card = (await screen.findAllByTestId("food-board-card"))[0];
+    fireEvent.click(within(card).getByRole("button", { name: "調理開始" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "ステータスの更新に失敗しました",
+    );
+    // クラッシュせず、カードは未対応列に留まる（次回ポーリングでの補正に委ねる）。
+    expect(
+      within(screen.getByTestId("food-board-column-received")).getByText(
+        /唐揚げ/,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("updateOrderItemStatusが例外を投げても（ドキュメント化されていない失敗）クラッシュせず案内する", async () => {
+    const item = makeItem({
+      name: "唐揚げ",
+      genre: "food",
+      status: "received",
+    });
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [item] });
+    mockUpdateOrderItemStatus.mockRejectedValue(new Error("network error"));
+
+    render(<FoodBoard storeId="store-1" />);
+
+    const card = (await screen.findAllByTestId("food-board-card"))[0];
+    fireEvent.click(within(card).getByRole("button", { name: "調理開始" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "ステータスの更新に失敗しました",
+    );
   });
 });
