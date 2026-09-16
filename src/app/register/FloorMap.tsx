@@ -4,9 +4,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createBrowserClient } from "@/lib/supabase/client";
 import {
   createStaffOperationsGateway,
+  type MenuItemListing,
   type TableBillingSummary,
 } from "@/lib/gateways/staffOperationsGateway";
+import type { OrderItemSummary } from "@/lib/gateways/customerOrderingGateway";
 import { useCheckIn } from "./useCheckIn";
+import { useAddOrderItem } from "./useAddOrderItem";
+import { useRemoveOrderItem } from "./useRemoveOrderItem";
 import TableDetailPanel from "./TableDetailPanel";
 
 /**
@@ -147,6 +151,48 @@ import TableDetailPanel from "./TableDetailPanel";
  * 新しい注文・合計が新規のfetch呼び出しを伴わずに反映される
  * （要件5.3「選択中の卓に新たな注文が追加されたら表示中の明細・合計を
  * 更新する」を、新規のポーリング機構を増やさずに満たす）。
+ *
+ * ## タスク8.3での更新: 品目の追加・削除（確認モーダル）
+ * 8.2が確立した「実際のRPC呼び出し・ローカル状態へのマージはFloorMap側
+ * （フック）が担い、TableDetailPanel.tsxは確認モーダル等のUI状態のみを
+ * 持つ純粋なプレゼンテーションに徹する」という役割分担を、`addOrderItem`/
+ * `removeOrderItem`にもそのまま適用する（`useAddOrderItem`/
+ * `useRemoveOrderItem`、`useCheckIn`と同型の小さな共有フック）。
+ *
+ * ### `mutationSeqRef`の適用（8.2と同型、7.6が確立した設計の再利用）
+ * 品目追加成功時のローカルマージ（`mergeAddedItem`）・削除成功時のローカル
+ * マージ（`mergeRemovedItem`）は、いずれも既存の5秒背景ポーリングと
+ * 同一コンポーネント内で共存するため、8.2の`mergeStartedSession`と全く同じ
+ * `mutationSeqRef`（インクリメント）＋`load()`内のフェッチ開始時点の値の
+ * 記録・解決時の不一致検出、という競合防止をそのまま適用する（tasks.md
+ * 8.2 Implementation Notesが「新しい局所的マージ経路はいずれも同じ競合に
+ * さらされるため、必ず同じガードを適用すること」と予告していた通り）。
+ * 回帰テストは`FloorMap.test.tsx`に「品目追加成功より前に開始した背景
+ * ポーリングが...」「品目削除成功より前に開始した背景ポーリングが...」を
+ * 追加した（8.2のcheck-in成功の回帰テストと同型）。
+ *
+ * ### 合計金額の再計算方法（design decision、tasks.mdの指示）
+ * `list_register_feed`の`total`は`unit_price_snapshot*quantity`の単純合計
+ * （statusによる絞り込みなし、0004設計判断23参照）であるため、ローカル
+ * マージでも同じ式（`total + unitPrice*quantity`で加算、`total -
+ * unitPrice*quantity`で減算）を用いる。次回の背景ポーリングがサーバー側の
+ * 真の値で自然に上書きするため、クライアント側の再計算が将来サーバー側の
+ * 計算式と乖離しても実害は次回ポーリングまでに限定される。
+ *
+ * ### 品目一覧（`listMenuItems`）の取得方法
+ * 品目追加リストは選択中の卓に依存しない店舗全体のデータのため、
+ * `selectedTableId`とは独立した別のuseEffectでマウント時取得＋
+ * `REGISTER_FLOOR_MAP_POLL_INTERVAL_MS`間隔のポーリングを行う
+ * （FoodBoard.tsx/DrinkBoard.tsx/SoldOutBoard.tsxが確立した「本格的な
+ * Realtime配線（9.2）までの間は定期ポーリングで代替する」という既存の
+ * 前例をそのまま踏襲。新しいポーリング間隔定数は増やさず、卓マップと同じ
+ * 間隔を再利用する）。品目一覧はローカルな楽観的更新の対象ではない
+ * （追加・削除操作は`state.tables`側のみをマージし、`menuItems`側の
+ * `soldOut`フラグ等は変更しない）ため、`mutationSeqRef`のような競合防止は
+ * 不要（「背景フェッチが確定済みローカル状態を丸ごと置き換える」パターンと
+ * 「ユーザー操作起点の即時ローカルマージ」パターンが同じ状態スロットで
+ * 共存する場合にのみ必要な対策であり、`menuItems`はマージされないため
+ * 該当しない）。
  */
 export const REGISTER_FLOOR_MAP_POLL_INTERVAL_MS = 5000;
 
@@ -266,11 +312,141 @@ export default function FloorMap({ storeId }: FloorMapProps) {
   const { checkIn, submittingTableId, checkInError, clearCheckInError } =
     useCheckIn(gateway, mergeStartedSession);
 
-  // タスク8.2で追加: 選択中の卓が切り替わる（別の卓を選ぶ／パネルを閉じる）
-  // たびに、直前の入店操作エラーを持ち越さない（別の卓のパネルへ古い
-  // エラーメッセージを誤って表示することを防ぐ）。
+  /**
+   * タスク8.3で追加: `addOrderItem`成功応答（`OrderItemSummary`）を
+   * `state.tables`の該当卓の`items`へ追加し、`total`を
+   * `unitPrice*quantity`分だけ加算する（ファイル冒頭コメント「合計金額の
+   * 再計算方法」参照）。`mutationSeqRef`のインクリメントは8.2の
+   * `mergeStartedSession`と同型のガード。
+   */
+  function mergeAddedItem(tableId: string, item: OrderItemSummary) {
+    mutationSeqRef.current += 1;
+    setState((prev) =>
+      prev.status === "ready"
+        ? {
+            status: "ready",
+            tables: prev.tables.map((table) =>
+              table.tableId === tableId
+                ? {
+                    ...table,
+                    items: [
+                      ...table.items,
+                      {
+                        id: item.id,
+                        menuItemId: item.menuItemId,
+                        name: item.name,
+                        quantity: item.quantity,
+                        unitPrice: item.unitPrice,
+                        optionsSummary: item.optionsSummary,
+                        status: item.status,
+                      },
+                    ],
+                    total: table.total + item.unitPrice * item.quantity,
+                  }
+                : table,
+            ),
+          }
+        : prev,
+    );
+  }
+
+  /**
+   * タスク8.3で追加: `removeOrderItem`成功応答（`{orderItemId}`）を
+   * `state.tables`の該当卓の`items`から取り除き、`total`から
+   * `unitPrice*quantity`分だけ減算する。削除対象が既にローカル状態に
+   * 存在しない場合（通常運用下では起こらない）は何もしない。
+   */
+  function mergeRemovedItem(tableId: string, orderItemId: string) {
+    mutationSeqRef.current += 1;
+    setState((prev) => {
+      if (prev.status !== "ready") {
+        return prev;
+      }
+      return {
+        status: "ready",
+        tables: prev.tables.map((table) => {
+          if (table.tableId !== tableId) {
+            return table;
+          }
+          const removed = table.items.find(
+            (item) => item.id === orderItemId,
+          );
+          if (!removed) {
+            return table;
+          }
+          return {
+            ...table,
+            items: table.items.filter((item) => item.id !== orderItemId),
+            total: table.total - removed.unitPrice * removed.quantity,
+          };
+        }),
+      };
+    });
+  }
+
+  const { addItem, addItemError, clearAddItemError } = useAddOrderItem(
+    gateway,
+    mergeAddedItem,
+  );
+  const { removeItem, removeItemError, clearRemoveItemError } =
+    useRemoveOrderItem(gateway, mergeRemovedItem);
+
+  // タスク8.3で追加: 品目追加リストは選択中の卓に依存しない店舗全体の
+  // データのため、`state.tables`とは独立したstateとして持つ（ファイル
+  // 冒頭コメント「品目一覧の取得方法」参照）。
+  const [menuItemsState, setMenuItemsState] = useState<
+    | { status: "loading" }
+    | { status: "error" }
+    | { status: "ready"; items: ReadonlyArray<MenuItemListing> }
+  >({ status: "loading" });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadMenuItems() {
+      try {
+        const result = await gateway.listMenuItems({ storeId });
+        if (cancelled) {
+          return;
+        }
+        if (!result.ok) {
+          // design.mdの`never`エラー型によりここへは実際には到達しない
+          // 防御的分岐（listRegisterFeedの読み込みeffectと同じ方針）。
+          setMenuItemsState((prev) =>
+            prev.status === "ready" ? prev : { status: "error" },
+          );
+          return;
+        }
+        setMenuItemsState({ status: "ready", items: result.value });
+      } catch {
+        if (!cancelled) {
+          setMenuItemsState((prev) =>
+            prev.status === "ready" ? prev : { status: "error" },
+          );
+        }
+      }
+    }
+
+    void loadMenuItems();
+
+    const interval = setInterval(() => {
+      void loadMenuItems();
+    }, REGISTER_FLOOR_MAP_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [gateway, storeId]);
+
+  // タスク8.2で追加（8.3で品目追加・削除のエラーも合わせてクリアするよう
+  // 拡張）: 選択中の卓が切り替わる（別の卓を選ぶ／パネルを閉じる）たびに、
+  // 直前の操作エラーを持ち越さない（別の卓のパネルへ古いエラーメッセージを
+  // 誤って表示することを防ぐ）。
   useEffect(() => {
     clearCheckInError();
+    clearAddItemError();
+    clearRemoveItemError();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTableId]);
 
@@ -461,6 +637,37 @@ export default function FloorMap({ storeId }: FloorMapProps) {
           checkInErrorMessage={
             checkInError && checkInError.tableId === selectedTable.tableId
               ? checkInError.message
+              : null
+          }
+          menuItems={
+            menuItemsState.status === "ready" ? menuItemsState.items : []
+          }
+          menuItemsLoadError={menuItemsState.status === "error"}
+          onAddItem={(input) => {
+            if (!selectedTable.activeSession) {
+              // 到達しないはずの防御的分岐: onAddItemはOccupiedView
+              // （table.activeSessionが非nullのときのみ描画される）からしか
+              // 呼ばれない。
+              return Promise.resolve();
+            }
+            return addItem(selectedTable.tableId, {
+              sessionId: selectedTable.activeSession.id,
+              menuItemId: input.menuItemId,
+              quantity: input.quantity,
+              optionSelections: input.optionSelections,
+            });
+          }}
+          addItemErrorMessage={
+            addItemError && addItemError.tableId === selectedTable.tableId
+              ? addItemError.message
+              : null
+          }
+          onRemoveItem={(orderItemId) =>
+            removeItem(selectedTable.tableId, orderItemId)
+          }
+          removeItemErrorMessage={
+            removeItemError && removeItemError.tableId === selectedTable.tableId
+              ? removeItemError.message
               : null
           }
         />

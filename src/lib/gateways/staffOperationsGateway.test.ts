@@ -767,7 +767,7 @@ describe("createStaffOperationsGateway", () => {
   });
 
   describe("listRegisterFeed", () => {
-    it("list_register_feedをp_store_idで呼び出し、成功応答を配列へ整形する（activeSessionがnullの卓を含む）", async () => {
+    it("list_register_feedをp_store_idで呼び出し、成功応答を配列へ整形する（activeSessionがnullの卓を含む、各明細のid/optionsSummary/statusを含む。タスク8.3）", async () => {
       rpc.mockResolvedValueOnce({
         data: [
           {
@@ -779,7 +779,15 @@ describe("createStaffOperationsGateway", () => {
               partySize: 2,
             },
             items: [
-              { menuItemId: "item-1", name: "Item One", quantity: 2, unitPrice: 500 },
+              {
+                id: "item-row-1",
+                menuItemId: "item-1",
+                name: "Item One",
+                quantity: 2,
+                unitPrice: 500,
+                optionsSummary: "わさび抜き",
+                status: "received",
+              },
             ],
             total: 1000,
             hasOpenCallRequest: true,
@@ -813,7 +821,15 @@ describe("createStaffOperationsGateway", () => {
           partySize: 2,
         },
         items: [
-          { menuItemId: "item-1", name: "Item One", quantity: 2, unitPrice: 500 },
+          {
+            id: "item-row-1",
+            menuItemId: "item-1",
+            name: "Item One",
+            quantity: 2,
+            unitPrice: 500,
+            optionsSummary: "わさび抜き",
+            status: "received",
+          },
         ],
         total: 1000,
         hasOpenCallRequest: true,
@@ -845,7 +861,7 @@ describe("createStaffOperationsGateway", () => {
   });
 
   describe("listMenuItems", () => {
-    it("list_menu_itemsをp_store_idで呼び出し、成功応答を配列へ整形する", async () => {
+    it("list_menu_itemsをp_store_idで呼び出し、成功応答を配列へ整形する（imageUrl/optionsを含む。タスク8.3でレジの品目追加フロー向けに追加）", async () => {
       rpc.mockResolvedValueOnce({
         data: [
           {
@@ -854,6 +870,16 @@ describe("createStaffOperationsGateway", () => {
             price: 600,
             soldOut: false,
             genre: "food",
+            imageUrl: "https://example.com/karaage.jpg",
+            options: [
+              {
+                id: "sauce",
+                type: "choice",
+                label: "タレ",
+                choices: ["塩", "醤油"],
+                default: "塩",
+              },
+            ],
           },
           {
             id: "item-2",
@@ -861,6 +887,8 @@ describe("createStaffOperationsGateway", () => {
             price: 400,
             soldOut: true,
             genre: "drink",
+            imageUrl: null,
+            options: [],
           },
         ],
         error: null,
@@ -874,13 +902,31 @@ describe("createStaffOperationsGateway", () => {
       expect(result).toEqual({
         ok: true,
         value: [
-          { id: "item-1", name: "唐揚げ", price: 600, soldOut: false, genre: "food" },
+          {
+            id: "item-1",
+            name: "唐揚げ",
+            price: 600,
+            soldOut: false,
+            genre: "food",
+            imageUrl: "https://example.com/karaage.jpg",
+            options: [
+              {
+                id: "sauce",
+                type: "choice",
+                label: "タレ",
+                choices: ["塩", "醤油"],
+                default: "塩",
+              },
+            ],
+          },
           {
             id: "item-2",
             name: "レモンサワー",
             price: 400,
             soldOut: true,
             genre: "drink",
+            imageUrl: null,
+            options: [],
           },
         ],
       });

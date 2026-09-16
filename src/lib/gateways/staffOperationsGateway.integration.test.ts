@@ -633,6 +633,17 @@ describe("staffOperationsGateway（結合テスト、実RPCへの疎通確認）
       hasOpenCallRequest: false, // resolveCallRequestのテストで既にresolved済みのため
     });
 
+    // タスク8.3（0012_list_register_feed_item_id.sql）: 品目操作卓
+    // （addOrderItem/removeOrderItemのテストが既に品目を追加・削除して
+    // いる）の残存明細が、id/optionsSummary/statusを含む形で整形されること。
+    const itemsTable = result.value.find((t) => t.tableId === tableItems);
+    expect(itemsTable).toBeDefined();
+    for (const item of itemsTable?.items ?? []) {
+      expect(typeof item.id).toBe("string");
+      expect(item.id.length).toBeGreaterThan(0);
+      expect(["received", "in_progress", "done"]).toContain(item.status);
+    }
+
     // アクティブセッションのない卓（例: tableClosedForChecksは常にclosedな
     // セッションしか持たない）は、activeSession: null・items: []・total: 0・
     // hasOpenCallRequest: falseという設計判断24の形状を満たすはずである。
@@ -655,5 +666,28 @@ describe("staffOperationsGateway（結合テスト、実RPCへの疎通確認）
     const gateway = createStaffOperationsGateway(client);
 
     await expect(gateway.listRegisterFeed({ storeId })).rejects.toThrow();
+  });
+
+  it("listMenuItems: registerロールのデバイスからも呼び出せ、imageUrl/optionsを含む形で整形される（タスク8.3、0013_list_menu_items_register_options.sql）", async () => {
+    const { client, authUserId } = await createDeviceClient(
+      "register",
+      storeId,
+    );
+    createdAuthUserIds.push(authUserId);
+    const gateway = createStaffOperationsGateway(client);
+
+    const result = await gateway.listMenuItems({ storeId });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const item = result.value.find((i) => i.id === menuItemNormal);
+    expect(item).toMatchObject({
+      name: "Wrapper Food Item",
+      price: 700,
+      soldOut: false,
+      genre: "food",
+      imageUrl: null,
+      options: [],
+    });
   });
 });

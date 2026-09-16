@@ -35,6 +35,12 @@ function makeItem(overrides: Partial<MenuItemListing> = {}): MenuItemListing {
     price: 500,
     soldOut: false,
     genre: "food",
+    // タスク8.3でMenuItemListingへ追加されたフィールド（レジの品目追加
+    // フローがOptionSelectionPanel.tsxを再利用するために必要。
+    // staffOperationsGateway.ts参照）。SoldOutBoard.tsx自体はこれらを
+    // 参照しないが、型を満たすためのデフォルト値を用意する。
+    imageUrl: null,
+    options: [],
     ...overrides,
   };
 }

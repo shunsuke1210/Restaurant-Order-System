@@ -13,10 +13,17 @@
 // - 店舗スコープ（他店舗の品目を含めない）
 // - id/name/price/soldOut/genreの正しいキー構成
 // - 名前順の安定した並び
-// - kitchen限定（registerはFORBIDDEN）
 // を実際のDB・実際のdevice_roleクレーム付きJWTに対して満たすことを検証する。
 //
-// Requirements: 7.1, 7.3, 7.4
+// タスク8.3で更新（0013_list_menu_items_register_options.sql）: 0011冒頭
+// コメントが8.3実装者の判断に委ねていた「registerロールへ開放するか」を
+// 「開放する」と判断した（レジの品目追加フローが対象品目一覧を必要とする
+// ため）。これに伴い「registerロールはFORBIDDEN」という当時の観測可能な
+// 完了条件は成立しなくなり、代わりに「registerロールからも呼び出せる」を
+// 検証するテストへ置き換えた。応答にはimageUrl/options（レジの品目追加
+// フローが客側OptionSelectionPanel.tsxを再利用するために必要）が追加された。
+//
+// Requirements: 5.5, 7.1, 7.3, 7.4
 import { randomUUID } from "node:crypto";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { Pool } from "pg";
@@ -37,9 +44,6 @@ function requireEnv(name: string): string {
 const connectionString = requireEnv("SUPABASE_DB_URL");
 const supabaseUrl = requireEnv("NEXT_PUBLIC_SUPABASE_URL");
 const supabaseAnonKey = requireEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
-
-// 0006_assert_device_role.sqlが送出するカスタムSQLSTATE（FORBIDDEN相当）。
-const FORBIDDEN_DEVICE_ROLE = "P0403";
 
 const pool = new Pool({ connectionString });
 
@@ -80,6 +84,8 @@ interface MenuItemListingRow {
   price: number;
   soldOut: boolean;
   genre: "ippin" | "food" | "drink";
+  imageUrl: string | null;
+  options: ReadonlyArray<unknown>;
 }
 
 async function callListMenuItems(
@@ -178,6 +184,10 @@ describe("0011_list_menu_items.sql: list_menu_items RPC（結合テスト）", (
       price: 300,
       soldOut: false,
       genre: "ippin",
+      // タスク8.3で追加。シードデータはimage_urlを指定せず(NULL)、
+      // optionsは'[]'::jsonbを指定している。
+      imageUrl: null,
+      options: [],
     });
     expect(relevant.find((item) => item.id === menuItemSoldOutId)).toMatchObject({
       name: "Sold Out Item",
@@ -200,7 +210,7 @@ describe("0011_list_menu_items.sql: list_menu_items RPC（結合テスト）", (
     expect(ids).not.toContain(menuItemStoreBId);
   });
 
-  it("registerロールのデバイスから呼び出すとFORBIDDENで拒否される（setSoldOutと同じkitchen限定、0011冒頭コメント参照）", async () => {
+  it("registerロールのデバイスからも呼び出せる（タスク8.3でレジの品目追加フロー向けに開放、0013冒頭コメント参照）", async () => {
     const { client, authUserId } = await createDeviceClient(
       "register",
       storeAId,
@@ -209,9 +219,16 @@ describe("0011_list_menu_items.sql: list_menu_items RPC（結合テスト）", (
 
     const { data, error } = await callListMenuItems(client, storeAId);
 
-    expect(data).toBeNull();
-    expect(error).not.toBeNull();
-    expect(error?.code).toBe(FORBIDDEN_DEVICE_ROLE);
+    expect(error).toBeNull();
+    expect(data).not.toBeNull();
+    const ids = (data as MenuItemListingRow[]).map((item) => item.id);
+    expect(ids).toEqual(
+      expect.arrayContaining([
+        menuItemAppleId,
+        menuItemSoldOutId,
+        menuItemZebraId,
+      ]),
+    );
   });
 
   it("anonロードから呼び出すとEXECUTE権限が無いため拒否される（authenticatedのみEXECUTE許可）", async () => {

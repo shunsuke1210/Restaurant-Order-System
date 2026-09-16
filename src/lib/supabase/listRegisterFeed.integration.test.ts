@@ -15,7 +15,13 @@
 // として返す（要件2.2）」。タスク4.5の設計判断21により、本RPCは
 // assert_device_role(array['register'])のみを許可する。
 //
-// Requirements: 2.2, 5.1, 5.2, 5.3, 5.4
+// タスク8.3で更新（0012_list_register_feed_item_id.sql）: 各明細に
+// id（order_items.id、removeOrderItemの対象識別に必須）・optionsSummary・
+// statusを追加した。本ファイルの既存テストは`toMatchObject`/
+// `objectContaining`で部分一致するのみのため追加フィールドがあっても
+// 元々失敗しないが、拡張そのものを直接検証する新しいテストを追加する。
+//
+// Requirements: 2.2, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6
 import { randomUUID } from "node:crypto";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { Pool } from "pg";
@@ -78,10 +84,13 @@ interface TableBillingSummary {
   tableLabel: string;
   activeSession: { id: string; startedAt: string; partySize: number } | null;
   items: ReadonlyArray<{
+    id: string;
     menuItemId: string;
     name: string;
     quantity: number;
     unitPrice: number;
+    optionsSummary: string | null;
+    status: string;
   }>;
   total: number;
   hasOpenCallRequest: boolean;
@@ -289,6 +298,40 @@ describe("0004_rpc_staff_gateway.sql: list_register_feed RPC（結合テスト�
       ]),
     );
     expect(row?.total).toBe(1700);
+  });
+
+  it("各明細にid（order_items.idそのもの、他明細と重複しない）とoptionsSummary/statusを含む（タスク8.3、要件5.5, 5.6）", async () => {
+    const { client, authUserId } = await createDeviceClient(
+      "register",
+      storeId,
+    );
+    createdAuthUserIds.push(authUserId);
+
+    const { data, error } = await callListRegisterFeed(client, storeId);
+    expect(error).toBeNull();
+
+    const row = (data as TableBillingSummary[]).find(
+      (r) => r.tableId === occupiedTableId,
+    );
+    expect(row).toBeDefined();
+    expect(row?.items).toHaveLength(2);
+
+    // idは実在するorder_items.idであり、明細間で重複しない
+    // （removeOrderItem({orderItemId})が対象を一意に識別できることの根拠）。
+    const ids = row?.items.map((item) => item.id) ?? [];
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const id of ids) {
+      expect(typeof id).toBe("string");
+      expect(id.length).toBeGreaterThan(0);
+    }
+
+    const itemA = row?.items.find((item) => item.menuItemId === menuItemAId);
+    expect(itemA).toMatchObject({
+      name: "Item A",
+      status: "received",
+    });
+    // シードしたorder_itemsはoptions_summaryを指定していないためnullになる。
+    expect(itemA?.optionsSummary).toBeNull();
   });
 
   it(

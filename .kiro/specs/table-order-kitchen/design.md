@@ -197,7 +197,7 @@ stateDiagram-v2
 | 3.5 | 来店中の人数変更（確認あり） | StaffOperationsGateway | `updatePartySize` | 来店セッションのライフサイクル |
 | 4.1-4.4 | セッション整合性ルール（1卓1アクティブ・拒否・履歴保持・独立ID） | Schema & RLS Foundation, StaffOperationsGateway | `startSession`（`SESSION_ALREADY_ACTIVE`） | 来店セッションのライフサイクル |
 | 5.1-5.4 | レジでの卓別会計確認表示・全卓の状況一覧 | StaffOperationsGateway | `listRegisterFeed` | 注文送信〜厨房反映フロー（Realtime経由で反映） |
-| 5.5-5.7 | レジからの品目追加・削除・ステータス変更（いずれも確認あり） | StaffOperationsGateway | `addOrderItem`, `removeOrderItem`, `updateOrderItemStatus` | - |
+| 5.5-5.7 | レジからの品目追加・削除・ステータス変更（いずれも確認あり） | StaffOperationsGateway | `addOrderItem`, `removeOrderItem`, `updateOrderItemStatus`, `listMenuItems`（5.5、タスク8.3で追加。追加対象の品目一覧） | - |
 | 6.1, 6.2, 6.5, 6.8, 6.9 | 品目単位の受注表示・ステータス更新反映・卓/時刻表示・接続断対応 | StaffOperationsGateway, RealtimeFeed | `listKitchenFeed`, `updateOrderItemStatus` | 注文送信〜厨房反映フロー |
 | 6.3, 6.4 | ジャンル別のステータス体系（フード/一品は3段階、ドリンクは2段階） | Schema & RLS Foundation, StaffOperationsGateway | `updateOrderItemStatus`（ジャンルに応じた遷移検証） | 品目ステータスの状態遷移 |
 | 6.6, 6.7 | 一品の直接完了ショートカットと未対応リストでの優先表示 | StaffOperationsGateway | `updateOrderItemStatus`, `listKitchenFeed`（並び替え） | 品目ステータスの状態遷移 |
@@ -407,8 +407,9 @@ type CallRequestError = { code: "SESSION_NOT_ACTIVE" } | { code: "CALL_ALREADY_O
 - `listKitchenFeed`が返す調理完了（`done`）の品目一覧は、`status_updated_at`の降順（直近に完了したものが先頭）で並べる（要件6.10）
 - `listRegisterFeed`は各卓の現在アクティブなセッションの人数・注文明細・合計金額を返す（要件5.1, 5.4）。アクティブセッションがない卓は`activeSession: null`として返し、UI側で「会計対象なし」と表示する（要件5.2）。この合計計算は`CustomerOrderingGateway.getOrderingContext`が返す`confirmedTotal`と同一のロジックを共有する
 - `listRegisterFeed`は各卓に紐づくアクティブセッションに未対応（`open`）の呼び出しが存在するかを`hasOpenCallRequest`として返し、卓マップの呼び出し中バッジの表示・再接続時の再同期の両方を支える（要件2.2）
+- `listRegisterFeed`の`items`各要素は`id`（注文明細自体の識別子。`removeOrderItem`の対象指定に必須）・`optionsSummary`・`status`を持つ（タスク8.3で`0012_list_register_feed_item_id.sql`として追加。当初は`menuItemId`/`name`/`quantity`/`unitPrice`の4フィールドのみで注文明細自体の識別子を持たず、`removeOrderItem`の実装に必要な前提が欠けていた。`status`は8.4向けの値の先取りであり、本spec時点のRegisterConsole UIはジャンル情報を持たないため画面には表示しない）
 - `addOrderItem` / `removeOrderItem` / `updateOrderItemStatus`（レジ起点）/ `setSoldOut` / `closeSession` の実行前確認（要件3.3, 5.5-5.7, 7.1, 7.3）はUI層（RegisterConsole / KitchenBoard）の責務とし、本Gatewayは確認済みの操作のみを受け取る。RPC自体に「確認フラグ」は持たせない
-- `listMenuItems`（タスク7.4で新規追加。CONCERN: 詳細は`0011_list_menu_items.sql`冒頭コメント参照）は、厨房の売り切れボード（KitchenBoard/SoldOutBoard.tsx）が切り替え対象の品目を選ぶための一覧を返す閲覧系メソッドである。`setSoldOut`が既に`menuItemId`を知っている前提の単一品目操作であるのに対し、「どの品目を対象にするか」を選ぶための一覧を返すメソッドがStaffOperationsGateway/CustomerOrderingGatewayのいずれにも存在しないというギャップがタスク7.4で判明し、追加した。`setSoldOut`と同じ理由（要件7のAcceptance Criteriaがいずれも「厨房スタッフ」を主語とすること）により`kitchen`ロール限定とし、`register`ロールからの呼び出しは`FORBIDDEN`とする。`listKitchenFeed`/`listRegisterFeed`と同様、業務エラーを持たない純粋な一覧取得のため、エラー型は`never`とする
+- `listMenuItems`（タスク7.4で新規追加。CONCERN: 詳細は`0011_list_menu_items.sql`冒頭コメント参照）は、厨房の売り切れボード（KitchenBoard/SoldOutBoard.tsx）が切り替え対象の品目を選ぶための一覧、および（タスク8.3で拡張、`0013_list_menu_items_register_options.sql`）レジの品目追加フローが追加対象を選ぶための一覧の両方を兼ねる、`kitchen`/`register`両ロールが呼び出せる閲覧系メソッドである。`setSoldOut`が既に`menuItemId`を知っている前提の単一品目操作であるのに対し、「どの品目を対象にするか」を選ぶための一覧を返すメソッドがStaffOperationsGateway/CustomerOrderingGatewayのいずれにも存在しないというギャップがタスク7.4で判明し、追加した。当初は要件7のAcceptance Criteriaがいずれも「厨房スタッフ」を主語とすることから`kitchen`ロール限定としていたが、タスク8.3でレジの品目追加フローにも同一の一覧が必要と判明し、`register`ロールへも開放した（返す情報自体は読者によって変える理由がなく、店舗の全`menu_items`を返すという同一のクエリロジックを別RPCとして複製することはSimplification原則に反すると判断したため）。`imageUrl`/`options`はタスク8.3で追加したフィールドで、レジの品目追加フローが客側`OptionSelectionPanel.tsx`（`MenuItemView`と同じキー構成を要求する）をそのまま再利用するために必要。`listKitchenFeed`/`listRegisterFeed`と同様、業務エラーを持たない純粋な一覧取得のため、エラー型は`never`とする
 
 **Dependencies**
 - Inbound: KitchenBoard (UI), RegisterConsole (UI) — 厨房/レジ画面からの呼び出し (P0)
@@ -438,12 +439,17 @@ interface StaffOperationsGateway {
 // タスク7.4で新規追加。setSoldOutの戻り値であるMenuItem型（storeIdを含む）
 // とは異なり、一覧表示に必要な最小限のキーのみを持つ（storeIdは入力の
 // p_store_idと同一値になり各要素へ繰り返し含める意味がないため省略）。
+// imageUrl/optionsはタスク8.3で追加（レジの品目追加フローが客側の
+// OptionSelectionPanel.tsxをそのまま再利用するため、MenuItemViewと同じ
+// キー構成に揃える必要があった。上記Responsibilities & Constraints参照）。
 interface MenuItemListing {
   id: string;
   name: string;
   price: number;
   soldOut: boolean;
   genre: MenuItemGenre;
+  imageUrl: string | null;
+  options: ReadonlyArray<MenuItemOption>;
 }
 
 type MenuItemGenre = "ippin" | "food" | "drink";
@@ -539,7 +545,10 @@ interface TableBillingSummary {
   tableId: string;
   tableLabel: string;
   activeSession: { id: string; startedAt: string; partySize: number } | null;
-  items: ReadonlyArray<{ menuItemId: string; name: string; quantity: number; unitPrice: number }>;
+  // idはタスク8.3で追加（removeOrderItemの対象指定に必須。上記
+  // Responsibilities & Constraints参照）。optionsSummary/statusも同時に
+  // 追加した（statusは8.4向けの値の先取りで、本spec時点のUIは表示しない）。
+  items: ReadonlyArray<{ id: string; menuItemId: string; name: string; quantity: number; unitPrice: number; optionsSummary: string | null; status: OrderItemStatus }>;
   total: number;
   hasOpenCallRequest: boolean;
 }
@@ -640,6 +649,8 @@ type DeviceProvisioningError = { code: "INVALID_SETUP_CODE" } | { code: "NOT_PRO
 
 #### RegisterConsole
 レジ通常モード画面。`StaffOperationsGateway`（P0）と`RealtimeFeed`（P1、金額表示の即時更新用）に依存する。全卓を「テーブル」「カウンター」のエリアに分けたマップ表示とし、各卓のタイルに人数・経過時間・合計金額・呼び出し中バッジを表示する（要件5.4）。タイルを選択すると卓の詳細（注文明細・ステータス変更・品目の追加/削除・会計）を操作するパネルを開く。入店操作は人数の入力を伴い（要件3.1, 3.4）、来店中の人数変更・品目の追加・削除・ステータス変更・会計確定はいずれも実行前に確認ダイアログを表示し、確認後にのみ対応する`StaffOperationsGateway`のメソッドを呼び出す（要件3.3, 3.5, 5.5-5.7）。
+
+**実装補足（タスク8.1-8.3）**: `RegisterConsoleScreen.tsx`（デバイスセッション確認のみ）と`FloorMap.tsx`（卓マップ本体、マウント時フェッチ+5秒ポーリング）に分割し、卓詳細パネル（`TableDetailPanel.tsx`）は選択中の卓の最新`TableBillingSummary`を`FloorMap`から都度受け取ることで、新規ポーリングなしに要件5.3のライブ反映を満たす。確認ダイアログは`SoldOutBoard.tsx`（KitchenBoard境界、タスク7.4）と同型の見た目・構造を持つが、Boundary Contextを跨ぐ物理的なimportを避けるため`ConfirmDialog.tsx`としてRegisterConsole境界内に複製する。品目追加フローのオプション選択UIは、客側の`OptionSelectionPanel.tsx`（純粋なプレゼンテーションコンポーネント）をそのまま再利用する（`listMenuItems`の`MenuItemListing`型を`MenuItemView`と構造的に一致させることで実現、上記StaffOperationsGateway Responsibilities & Constraints参照）。入店操作（要件3.1）には確認ダイアログを設けない（3.1には3.3/3.5/5.5-5.7の「実行前に確認を求め」という言及がなく、人数ステッパー＋単一の送信ボタン自体が確定操作であるため）。ポーリングと各種ローカルマージ（入店成功・品目追加成功・品目削除成功）が同一コンポーネント内で共存するため、7.6（KitchenBoard）が確立した単調増加シーケンスカウンタ（`mutationSeqRef`）による競合防止をそのまま踏襲する。
 
 ## Data Models
 

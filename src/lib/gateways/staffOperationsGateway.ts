@@ -7,6 +7,7 @@ import {
 import { type Result, ok, err } from "../result";
 import type {
   CallRequest,
+  MenuItemOption,
   OrderItemStatus,
   OrderItemSummary,
 } from "./customerOrderingGateway";
@@ -217,11 +218,23 @@ export interface TableBillingSummary {
   tableId: string;
   tableLabel: string;
   activeSession: { id: string; startedAt: string; partySize: number } | null;
+  // タスク8.3で拡張（0012_list_register_feed_item_id.sql）: 元々は
+  // {menuItemId, name, quantity, unitPrice}の4フィールドのみで、
+  // 注文明細自体の識別子を持たなかった（8.2レビューで判明、tasks.md
+  // Implementation Notes参照）。removeOrderItem({orderItemId})の対象を
+  // 一意に識別するため`id`（order_items.idそのもの）を追加した。あわせて
+  // mock-preview.htmlとの既知の表示乖離（オプション概要・ステータスを
+  // 表示できなかった）を解消するため`optionsSummary`/`status`も追加した
+  // （0012冒頭コメント参照。`status`は8.3のUIでは表示せず、8.4向けに
+  // 値のみ先取りする）。
   items: ReadonlyArray<{
+    id: string;
     menuItemId: string;
     name: string;
     quantity: number;
     unitPrice: number;
+    optionsSummary: string | null;
+    status: OrderItemStatus;
   }>;
   total: number;
   hasOpenCallRequest: boolean;
@@ -231,12 +244,27 @@ export interface TableBillingSummary {
 // Constraints「listMenuItems」参照。CONCERN: 0011_list_menu_items.sql冒頭
 // コメントに詳細な判断理由あり）。setSoldOutの戻り値であるMenuItem型
 // （storeIdを含む）とは異なり、一覧表示に必要な最小限のキーのみを持つ。
+//
+// タスク8.3で拡張（0013_list_menu_items_register_options.sql）:
+// `imageUrl`・`options`を追加した。レジの品目追加フロー
+// （src/app/register/TableDetailPanel.tsx）が客側の`OptionSelectionPanel`
+// （src/app/order/[tableId]/OptionSelectionPanel.tsx、`{item: MenuItemView,
+// onCancel, onConfirm}`という純粋なプレゼンテーションpropsのみを取る
+// ゲートウェイ非依存コンポーネント）をそのまま再利用する設計判断のため、
+// `MenuItemListing`を`MenuItemView`（id/name/price/soldOut/imageUrl/genre/
+// options）と構造的に一致させる必要がある（0013冒頭コメント参照）。
+// `options`の型`MenuItemOption`はcustomerOrderingGateway.tsからimportし
+// 重複定義しない（本ファイル冒頭コメント「型の再利用について」の既存方針を
+// 踏襲）。厨房の売り切れボード（SoldOutBoard.tsx、7.4）はこれら2フィールドを
+// 一切参照しない。
 export interface MenuItemListing {
   id: string;
   name: string;
   price: number;
   soldOut: boolean;
   genre: MenuItemGenre;
+  imageUrl: string | null;
+  options: ReadonlyArray<MenuItemOption>;
 }
 
 export interface StaffOperationsGateway {
@@ -526,6 +554,8 @@ function toMenuItemListing(data: Json): ReadonlyArray<MenuItemListing> {
     price: number;
     soldOut: boolean;
     genre: MenuItemGenre;
+    imageUrl: string | null;
+    options: ReadonlyArray<MenuItemOption>;
   }>;
 
   return raw.map((item) => ({
@@ -534,6 +564,8 @@ function toMenuItemListing(data: Json): ReadonlyArray<MenuItemListing> {
     price: item.price,
     soldOut: item.soldOut,
     genre: item.genre,
+    imageUrl: item.imageUrl,
+    options: item.options,
   }));
 }
 
@@ -547,10 +579,13 @@ function toRegisterFeed(data: Json): ReadonlyArray<TableBillingSummary> {
       partySize: number;
     } | null;
     items: ReadonlyArray<{
+      id: string;
       menuItemId: string;
       name: string;
       quantity: number;
       unitPrice: number;
+      optionsSummary: string | null;
+      status: OrderItemStatus;
     }>;
     total: number;
     hasOpenCallRequest: boolean;
@@ -567,10 +602,13 @@ function toRegisterFeed(data: Json): ReadonlyArray<TableBillingSummary> {
         }
       : null,
     items: table.items.map((item) => ({
+      id: item.id,
       menuItemId: item.menuItemId,
       name: item.name,
       quantity: item.quantity,
       unitPrice: item.unitPrice,
+      optionsSummary: item.optionsSummary,
+      status: item.status,
     })),
     total: table.total,
     hasOpenCallRequest: table.hasOpenCallRequest,

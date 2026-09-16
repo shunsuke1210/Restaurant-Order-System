@@ -10,19 +10,31 @@ import {
 import FloorMap, { REGISTER_FLOOR_MAP_POLL_INTERVAL_MS } from "./FloorMap";
 import type { TableBillingSummary } from "@/lib/gateways/staffOperationsGateway";
 
-// FloorMap（タスク8.1、卓マップ表示）のコンポーネントテスト。
-// staffOperationsGatewayをモックし、実DBには接続しない
+// FloorMap（タスク8.1/8.2/8.3、卓マップ表示・入店操作・品目の追加/削除）の
+// コンポーネントテスト。staffOperationsGatewayをモックし、実DBには接続しない
 // （FoodBoard.test.tsx・KitchenBoardScreen.test.tsxと同じ方式）。
 //
-// Requirements: 2.2, 5.4
+// タスク8.3で追加したテストは、FloorMap側の状態管理に関わる結合的な
+// 振る舞い（実際のaddOrderItem/removeOrderItem呼び出し・ローカルマージ・
+// mutationSeqRefによる背景ポーリングとの競合防止）のみを担当し、確認モーダル
+// の文言・オプション選択UIの詳細等はTableDetailPanel.test.tsxが担当する
+// （8.2確立の役割分担をそのまま踏襲）。
+//
+// Requirements: 2.2, 5.4, 5.5, 5.6
 
 const mockListRegisterFeed = vi.fn();
 const mockStartSession = vi.fn();
+const mockAddOrderItem = vi.fn();
+const mockRemoveOrderItem = vi.fn();
+const mockListMenuItems = vi.fn();
 
 vi.mock("@/lib/gateways/staffOperationsGateway", () => ({
   createStaffOperationsGateway: () => ({
     listRegisterFeed: (...args: unknown[]) => mockListRegisterFeed(...args),
     startSession: (...args: unknown[]) => mockStartSession(...args),
+    addOrderItem: (...args: unknown[]) => mockAddOrderItem(...args),
+    removeOrderItem: (...args: unknown[]) => mockRemoveOrderItem(...args),
+    listMenuItems: (...args: unknown[]) => mockListMenuItems(...args),
   }),
 }));
 
@@ -43,11 +55,36 @@ function makeTable(
   };
 }
 
+let itemIdCounter = 0;
+
+function makeBillingItem(
+  overrides: Partial<TableBillingSummary["items"][number]> = {},
+): TableBillingSummary["items"][number] {
+  itemIdCounter += 1;
+  return {
+    id: `order-item-${itemIdCounter}`,
+    menuItemId: `menu-${itemIdCounter}`,
+    name: `品目${itemIdCounter}`,
+    quantity: 1,
+    unitPrice: 100,
+    optionsSummary: null,
+    status: "received",
+    ...overrides,
+  };
+}
+
 describe("FloorMap", () => {
   beforeEach(() => {
     idCounter = 0;
+    itemIdCounter = 0;
     mockListRegisterFeed.mockReset();
     mockStartSession.mockReset();
+    mockAddOrderItem.mockReset();
+    mockRemoveOrderItem.mockReset();
+    mockListMenuItems.mockReset();
+    // タスク8.3で追加: FloorMapはマウント時に常にlistMenuItemsを呼び出す
+    // ため、それを検証しないテストのための既定値（空配列）を用意する。
+    mockListMenuItems.mockResolvedValue({ ok: true, value: [] });
   });
 
   afterEach(() => {
@@ -132,7 +169,7 @@ describe("FloorMap", () => {
       // itemsの単純合計（100）とは意図的に異なる値をtotalへ与え、
       // コンポーネントがitemsから再計算せずtotalをそのまま表示することを検証する。
       items: [
-        { menuItemId: "m1", name: "唐揚げ", quantity: 1, unitPrice: 100 },
+        makeBillingItem({ name: "唐揚げ", quantity: 1, unitPrice: 100 }),
       ],
       total: 3200,
     });
@@ -416,7 +453,7 @@ describe("FloorMap", () => {
           partySize: 4,
         },
         items: [
-          { menuItemId: "m1", name: "唐揚げ", quantity: 2, unitPrice: 500 },
+          makeBillingItem({ name: "唐揚げ", quantity: 2, unitPrice: 500 }),
         ],
         total: 12345,
       });
@@ -464,7 +501,7 @@ describe("FloorMap", () => {
       const updated = {
         ...occupied,
         items: [
-          { menuItemId: "m1", name: "ビール", quantity: 1, unitPrice: 600 },
+          makeBillingItem({ name: "ビール", quantity: 1, unitPrice: 600 }),
         ],
         total: 600,
       };
@@ -551,6 +588,344 @@ describe("FloorMap", () => {
       expect(
         within(tile).getByTestId("register-floor-tile-occupancy"),
       ).toHaveTextContent("2名");
+    });
+  });
+
+  // タスク8.3: 品目の追加・削除UI（確認モーダル）。
+  // Requirements: 5.5, 5.6
+  describe("品目の追加・削除（タスク8.3）", () => {
+    it("マウント時にstoreIdを指定してlistMenuItemsを呼び出す", async () => {
+      mockListRegisterFeed.mockResolvedValue({ ok: true, value: [] });
+
+      render(<FloorMap storeId="store-77" />);
+
+      await waitFor(() =>
+        expect(mockListMenuItems).toHaveBeenCalledWith({
+          storeId: "store-77",
+        }),
+      );
+    });
+
+    it("品目追加（オプション無し）: 確認後にaddOrderItemを正しい引数で呼び出し、成功時に品目が追加され合計が増える", async () => {
+      const occupied = makeTable({
+        tableLabel: "T1",
+        activeSession: {
+          id: "session-1",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          partySize: 2,
+        },
+        items: [],
+        total: 0,
+      });
+      mockListRegisterFeed.mockResolvedValue({ ok: true, value: [occupied] });
+      mockListMenuItems.mockResolvedValue({
+        ok: true,
+        value: [
+          {
+            id: "menu-1",
+            name: "唐揚げ",
+            price: 600,
+            soldOut: false,
+            genre: "food",
+            imageUrl: null,
+            options: [],
+          },
+        ],
+      });
+      mockAddOrderItem.mockResolvedValueOnce({
+        ok: true,
+        value: {
+          id: "order-item-new",
+          menuItemId: "menu-1",
+          name: "唐揚げ",
+          unitPrice: 600,
+          quantity: 1,
+          optionsSummary: null,
+          status: "received",
+          statusUpdatedAt: "2026-01-01T00:00:01.000Z",
+        },
+      });
+
+      render(<FloorMap storeId="store-1" />);
+      fireEvent.click(await screen.findByTestId("register-floor-tile-T1"));
+      fireEvent.click(await screen.findByTestId("register-add-menu-toggle"));
+      fireEvent.click(
+        await screen.findByRole("button", { name: "唐揚げを追加" }),
+      );
+      fireEvent.click(screen.getByTestId("register-add-confirm-confirm"));
+
+      await waitFor(() =>
+        expect(mockAddOrderItem).toHaveBeenCalledWith({
+          sessionId: "session-1",
+          menuItemId: "menu-1",
+          quantity: 1,
+          optionSelections: {},
+        }),
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: "閉じる" }));
+      const tile = screen.getByTestId("register-floor-tile-T1");
+      expect(
+        within(tile).getByTestId("register-floor-tile-total"),
+      ).toHaveTextContent("¥600");
+    });
+
+    it("品目削除: 確認後にremoveOrderItemを正しいidで呼び出し、成功時に品目が消え合計が減る", async () => {
+      const item = makeBillingItem({
+        name: "唐揚げ",
+        quantity: 1,
+        unitPrice: 600,
+      });
+      const occupied = makeTable({
+        tableLabel: "T1",
+        activeSession: {
+          id: "session-1",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          partySize: 2,
+        },
+        items: [item],
+        total: 600,
+      });
+      mockListRegisterFeed.mockResolvedValue({ ok: true, value: [occupied] });
+      mockRemoveOrderItem.mockResolvedValueOnce({
+        ok: true,
+        value: { orderItemId: item.id },
+      });
+
+      render(<FloorMap storeId="store-1" />);
+      fireEvent.click(await screen.findByTestId("register-floor-tile-T1"));
+      fireEvent.click(
+        await screen.findByRole("button", { name: "唐揚げを削除" }),
+      );
+      fireEvent.click(screen.getByTestId("register-remove-confirm-confirm"));
+
+      await waitFor(() =>
+        expect(mockRemoveOrderItem).toHaveBeenCalledWith({
+          orderItemId: item.id,
+        }),
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: "閉じる" }));
+      const tile = screen.getByTestId("register-floor-tile-T1");
+      expect(
+        within(tile).getByTestId("register-floor-tile-total"),
+      ).toHaveTextContent("¥0");
+    });
+
+    it("削除確認モーダルの「いいえ」を選ぶと、removeOrderItemが呼ばれず注文明細（画面表示）が変化しない（本タスクの観測可能な完了条件、要件5.6）", async () => {
+      const item = makeBillingItem({
+        name: "唐揚げ",
+        quantity: 1,
+        unitPrice: 600,
+      });
+      const occupied = makeTable({
+        tableLabel: "T1",
+        activeSession: {
+          id: "session-1",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          partySize: 2,
+        },
+        items: [item],
+        total: 600,
+      });
+      mockListRegisterFeed.mockResolvedValue({ ok: true, value: [occupied] });
+
+      render(<FloorMap storeId="store-1" />);
+      fireEvent.click(await screen.findByTestId("register-floor-tile-T1"));
+      fireEvent.click(
+        await screen.findByRole("button", { name: "唐揚げを削除" }),
+      );
+      fireEvent.click(screen.getByTestId("register-remove-confirm-cancel"));
+
+      expect(mockRemoveOrderItem).not.toHaveBeenCalled();
+      expect(
+        screen.getAllByTestId("register-table-detail-item"),
+      ).toHaveLength(1);
+      expect(
+        screen.getByTestId("register-table-detail-total"),
+      ).toHaveTextContent("¥600");
+
+      fireEvent.click(screen.getByRole("button", { name: "閉じる" }));
+      const tile = screen.getByTestId("register-floor-tile-T1");
+      expect(
+        within(tile).getByTestId("register-floor-tile-total"),
+      ).toHaveTextContent("¥600");
+    });
+
+    it("品目追加成功より前に開始した背景ポーリングが、成功のマージより後に解決しても、マージ結果を巻き戻さない（mutationSeqRefガード、7.6/8.2と同型の回帰テスト）", async () => {
+      vi.useFakeTimers();
+      const occupied = makeTable({
+        tableLabel: "T1",
+        activeSession: {
+          id: "session-1",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          partySize: 2,
+        },
+        items: [],
+        total: 0,
+      });
+      mockListRegisterFeed.mockResolvedValueOnce({ ok: true, value: [occupied] });
+      mockListMenuItems.mockResolvedValue({
+        ok: true,
+        value: [
+          {
+            id: "menu-1",
+            name: "唐揚げ",
+            price: 600,
+            soldOut: false,
+            genre: "food",
+            imageUrl: null,
+            options: [],
+          },
+        ],
+      });
+
+      render(<FloorMap storeId="store-1" />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      // 背景ポーリングが発火し、解決を意図的に保留する（品目追加前の
+      // 古いスナップショット: items:[]・total:0のまま）。
+      let resolveStalePoll!: (value: {
+        ok: true;
+        value: TableBillingSummary[];
+      }) => void;
+      const stalePoll = new Promise<{ ok: true; value: TableBillingSummary[] }>(
+        (resolve) => {
+          resolveStalePoll = resolve;
+        },
+      );
+      mockListRegisterFeed.mockReturnValueOnce(stalePoll);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(REGISTER_FLOOR_MAP_POLL_INTERVAL_MS);
+      });
+      expect(mockListRegisterFeed).toHaveBeenCalledTimes(2);
+
+      // このポーリングが解決するより前に、品目追加が完了し即座にマージされる。
+      mockAddOrderItem.mockResolvedValueOnce({
+        ok: true,
+        value: {
+          id: "order-item-new",
+          menuItemId: "menu-1",
+          name: "唐揚げ",
+          unitPrice: 600,
+          quantity: 1,
+          optionsSummary: null,
+          status: "received",
+          statusUpdatedAt: "2026-01-01T00:00:01.000Z",
+        },
+      });
+
+      fireEvent.click(screen.getByTestId("register-floor-tile-T1"));
+      fireEvent.click(screen.getByTestId("register-add-menu-toggle"));
+      fireEvent.click(screen.getByRole("button", { name: "唐揚げを追加" }));
+      await act(async () => {
+        fireEvent.click(screen.getByTestId("register-add-confirm-confirm"));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "閉じる" }));
+      expect(
+        within(screen.getByTestId("register-floor-tile-T1")).getByTestId(
+          "register-floor-tile-total",
+        ),
+      ).toHaveTextContent("¥600");
+
+      // 保留していた古いポーリング応答（追加前の空のまま）が今になって解決する。
+      await act(async () => {
+        resolveStalePoll({ ok: true, value: [occupied] });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // マージ結果（追加後）が古いスナップショットに巻き戻らないこと。
+      expect(
+        within(screen.getByTestId("register-floor-tile-T1")).getByTestId(
+          "register-floor-tile-total",
+        ),
+      ).toHaveTextContent("¥600");
+    });
+
+    it("品目削除成功より前に開始した背景ポーリングが、成功のマージより後に解決しても、マージ結果を巻き戻さない（mutationSeqRefガード、7.6/8.2と同型の回帰テスト）", async () => {
+      vi.useFakeTimers();
+      const item = makeBillingItem({
+        name: "唐揚げ",
+        quantity: 1,
+        unitPrice: 600,
+      });
+      const occupied = makeTable({
+        tableLabel: "T1",
+        activeSession: {
+          id: "session-1",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          partySize: 2,
+        },
+        items: [item],
+        total: 600,
+      });
+      mockListRegisterFeed.mockResolvedValueOnce({ ok: true, value: [occupied] });
+
+      render(<FloorMap storeId="store-1" />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      // 背景ポーリングが発火し、解決を意図的に保留する（削除前の古い
+      // スナップショット: itemsが残ったまま）。
+      let resolveStalePoll!: (value: {
+        ok: true;
+        value: TableBillingSummary[];
+      }) => void;
+      const stalePoll = new Promise<{ ok: true; value: TableBillingSummary[] }>(
+        (resolve) => {
+          resolveStalePoll = resolve;
+        },
+      );
+      mockListRegisterFeed.mockReturnValueOnce(stalePoll);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(REGISTER_FLOOR_MAP_POLL_INTERVAL_MS);
+      });
+      expect(mockListRegisterFeed).toHaveBeenCalledTimes(2);
+
+      // このポーリングが解決するより前に、品目削除が完了し即座にマージされる。
+      mockRemoveOrderItem.mockResolvedValueOnce({
+        ok: true,
+        value: { orderItemId: item.id },
+      });
+
+      fireEvent.click(screen.getByTestId("register-floor-tile-T1"));
+      fireEvent.click(screen.getByRole("button", { name: "唐揚げを削除" }));
+      await act(async () => {
+        fireEvent.click(screen.getByTestId("register-remove-confirm-confirm"));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "閉じる" }));
+      expect(
+        within(screen.getByTestId("register-floor-tile-T1")).getByTestId(
+          "register-floor-tile-total",
+        ),
+      ).toHaveTextContent("¥0");
+
+      // 保留していた古いポーリング応答（削除前のitemsが残ったまま）が
+      // 今になって解決する。
+      await act(async () => {
+        resolveStalePoll({ ok: true, value: [occupied] });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // マージ結果（削除後）が古いスナップショットに巻き戻らないこと。
+      expect(
+        within(screen.getByTestId("register-floor-tile-T1")).getByTestId(
+          "register-floor-tile-total",
+        ),
+      ).toHaveTextContent("¥0");
     });
   });
 });
