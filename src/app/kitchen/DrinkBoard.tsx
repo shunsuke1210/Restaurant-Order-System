@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createBrowserClient } from "@/lib/supabase/client";
 import {
   createStaffOperationsGateway,
@@ -79,11 +79,29 @@ import OrderItemStatusActions from "./OrderItemStatusActions";
  * （`OrderItemStatusActions`）を利用する。ドリンクジャンルではreceived→done
  * の1操作のみで、一品のような直接完了ショートカットは存在しない
  * （OrderItemStatusActions.tsxの`resolveActions`がジャンルごとに分岐する）。
+ *
+ * ## タスク7.6での更新: resyncSignal propとポーリング維持の判断
+ * FoodBoard.tsx冒頭コメント「タスク7.6での更新」「ポーリングを維持する
+ * 判断について」と全く同じ設計・同じ理由をそのまま踏襲する: resyncSignal
+ * （KitchenBoardScreenがuseRealtimeFeedのonSyncで発火させる単調増加
+ * カウンタ）は、既存のマウント時フェッチ+ポーリングeffectとは完全に
+ * 独立した新設のeffectで検知し、`load(false)`と同じ意味論（成功時のみ
+ * 表示を差し替え、失敗時は既存表示を維持する）で背景フェッチを行う。
+ * ポーリング自体（`DRINK_BOARD_POLL_INTERVAL_MS`）も5000msのまま維持する
+ * （厨房KDSでの見逃し防止のための低コストな最終防衛線という理由も同一。
+ * tasks.md Implementation Notesの本タスクエントリ参照）。`DRINK_BOARD_
+ * GENRES`で絞り込む点のみがFoodBoard.tsxと異なる。
  */
 export const DRINK_BOARD_POLL_INTERVAL_MS = 5000;
 
 type DrinkBoardProps = {
   storeId: string;
+  /**
+   * タスク7.6: KitchenBoardScreenがuseRealtimeFeedのonSyncで発火させる
+   * 単調増加カウンタ。FoodBoard.tsxの同名propと同じ契約
+   * （ファイル冒頭コメント「タスク7.6での更新」参照）。
+   */
+  resyncSignal?: number;
 };
 
 type BoardState =
@@ -154,20 +172,29 @@ function groupByStatus(
   return groups;
 }
 
-export default function DrinkBoard({ storeId }: DrinkBoardProps) {
+export default function DrinkBoard({
+  storeId,
+  resyncSignal,
+}: DrinkBoardProps) {
   const gateway = useMemo(
     () => createStaffOperationsGateway(createBrowserClient()),
     [],
   );
   const [state, setState] = useState<BoardState>({ status: "loading" });
 
+  // タスク7.6で追加: FoodBoard.tsxの同名refと全く同じ理由・同じ設計
+  // （FoodBoard.tsx冒頭のmutationSeqRef宣言コメント参照）。
+  const mutationSeqRef = useRef(0);
+
   // タスク7.5: ステータス更新後の即時反映用。FoodBoard.tsxの`updateItems`と
-  // 同じ方針（"ready"の場合のみマージする）。
+  // 同じ方針（"ready"の場合のみマージする）。タスク7.6で追加:
+  // `mutationSeqRef`のインクリメントもFoodBoard.tsxと同じ理由。
   function updateItems(
     updater: (
       prev: ReadonlyArray<KitchenFeedItem>,
     ) => ReadonlyArray<KitchenFeedItem>,
   ) {
+    mutationSeqRef.current += 1;
     setState((prev) =>
       prev.status === "ready"
         ? { status: "ready", items: updater(prev.items) }
@@ -187,6 +214,9 @@ export default function DrinkBoard({ storeId }: DrinkBoardProps) {
     // ——ドキュメント化されたエラーコード以外は常に例外としてthrowされる
     // ため、必ずtry/catchで捕捉する（FoodBoard.tsxと同じ規約）。
     async function load(isInitialLoad: boolean) {
+      // タスク7.6で追加: FoodBoard.tsxのload()と同じ理由
+      // （FoodBoard.tsx冒頭のmutationSeqRef宣言コメント参照）。
+      const fetchSeq = mutationSeqRef.current;
       try {
         const result = await gateway.listKitchenFeed({ storeId });
         if (cancelled) {
@@ -198,6 +228,11 @@ export default function DrinkBoard({ storeId }: DrinkBoardProps) {
           if (isInitialLoad) {
             setState({ status: "error", message: GENERIC_ERROR_MESSAGE });
           }
+          return;
+        }
+        if (mutationSeqRef.current !== fetchSeq) {
+          // FoodBoard.tsxのload()と同じ理由でこのフェッチの結果は破棄する
+          // （7.6レビューで発見された競合、tasks.md Implementation Notes参照）。
           return;
         }
         const drinkItems = result.value.filter((item) =>
@@ -225,6 +260,51 @@ export default function DrinkBoard({ storeId }: DrinkBoardProps) {
       clearInterval(interval);
     };
   }, [gateway, storeId]);
+
+  // タスク7.6: FoodBoard.tsxの同名effectと全く同じ設計・同じ理由
+  // （ファイル冒頭コメント「タスク7.6での更新」参照）。上のマウント時
+  // フェッチ+ポーリングeffectとは意図的に完全に独立させている。
+  const lastResyncSignalRef = useRef(resyncSignal);
+  useEffect(() => {
+    if (
+      resyncSignal === undefined ||
+      resyncSignal === lastResyncSignalRef.current
+    ) {
+      return;
+    }
+    lastResyncSignalRef.current = resyncSignal;
+
+    let cancelled = false;
+
+    async function resync() {
+      // タスク7.6レビューで追加: FoodBoard.tsxのresync()と同じ理由
+      // （FoodBoard.tsx冒頭のmutationSeqRef宣言コメント参照）。
+      const fetchSeq = mutationSeqRef.current;
+      try {
+        const result = await gateway.listKitchenFeed({ storeId });
+        if (cancelled || !result.ok) {
+          // FoodBoard.tsxと同じ方針: 到達しても既存表示を維持するのみ。
+          return;
+        }
+        if (mutationSeqRef.current !== fetchSeq) {
+          // FoodBoard.tsxのresync()と同じ理由でこのフェッチの結果は破棄する。
+          return;
+        }
+        const drinkItems = result.value.filter((item) =>
+          DRINK_BOARD_GENRES.has(item.genre),
+        );
+        setState({ status: "ready", items: drinkItems });
+      } catch {
+        // 背景フェッチの失敗は画面を壊さないよう握りつぶす
+        // （FoodBoard.tsxと同じ方針）。
+      }
+    }
+
+    void resync();
+    return () => {
+      cancelled = true;
+    };
+  }, [resyncSignal, gateway, storeId]);
 
   if (state.status === "loading") {
     return (

@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import DrinkBoard, { DRINK_BOARD_POLL_INTERVAL_MS } from "./DrinkBoard";
 import type { KitchenFeedItem } from "./FoodBoard";
 
@@ -384,5 +391,85 @@ describe("DrinkBoard（タスク7.5: ステータス更新操作と即時反映�
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "ステータスの更新に失敗しました",
     );
+  });
+});
+
+// =========================================================================
+// タスク7.6: 接続断表示と再同期（resyncSignalによる背景再取得）
+// Requirements: 6.9
+//
+// FoodBoard.test.tsx（タスク7.6ブロック）と同じ検証内容・同じ理由を
+// DrinkBoardに対して行う。
+// =========================================================================
+
+describe("DrinkBoard（タスク7.6: resyncSignalによる背景再取得）", () => {
+  beforeEach(() => {
+    idCounter = 0;
+    mockListKitchenFeed.mockReset();
+    mockUpdateOrderItemStatus.mockReset();
+  });
+
+  it("resyncSignalが変化すると、ローディング状態に戻さず背景でlistKitchenFeedを再呼び出しする", async () => {
+    const initial = makeItem({ name: "レモンサワー", status: "received" });
+    mockListKitchenFeed.mockResolvedValueOnce({ ok: true, value: [initial] });
+
+    const { rerender } = render(
+      <DrinkBoard storeId="store-1" resyncSignal={0} />,
+    );
+    expect(await screen.findByTestId("drink-board")).toBeInTheDocument();
+    expect(mockListKitchenFeed).toHaveBeenCalledTimes(1);
+
+    const afterResync = makeItem({ name: "烏龍茶", status: "received" });
+    mockListKitchenFeed.mockResolvedValueOnce({
+      ok: true,
+      value: [afterResync],
+    });
+
+    rerender(<DrinkBoard storeId="store-1" resyncSignal={1} />);
+
+    await waitFor(() => expect(mockListKitchenFeed).toHaveBeenCalledTimes(2));
+    expect(
+      screen.queryByTestId("drink-board-loading"),
+    ).not.toBeInTheDocument();
+    expect(await screen.findByText(/烏龍茶/)).toBeInTheDocument();
+  });
+
+  it("マウント時に渡されたresyncSignalの初期値では、余分な再取得を行わない", async () => {
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [] });
+
+    render(<DrinkBoard storeId="store-1" resyncSignal={5} />);
+    await screen.findByTestId("drink-board");
+
+    expect(mockListKitchenFeed).toHaveBeenCalledTimes(1);
+  });
+
+  it("resyncSignal変化時の背景フェッチが失敗しても、既存の表示中の品目をエラー画面へ巻き戻さない（アドバーサリアルケース）", async () => {
+    const existing = makeItem({ name: "レモンサワー", status: "received" });
+    mockListKitchenFeed.mockResolvedValueOnce({ ok: true, value: [existing] });
+
+    const { rerender } = render(
+      <DrinkBoard storeId="store-1" resyncSignal={0} />,
+    );
+    expect(await screen.findByTestId("drink-board")).toBeInTheDocument();
+    expect(screen.getByText(/レモンサワー/)).toBeInTheDocument();
+
+    mockListKitchenFeed.mockRejectedValueOnce(new Error("network blip"));
+
+    rerender(<DrinkBoard storeId="store-1" resyncSignal={1} />);
+
+    await waitFor(() => expect(mockListKitchenFeed).toHaveBeenCalledTimes(2));
+
+    expect(screen.getByTestId("drink-board")).toBeInTheDocument();
+    expect(screen.getByText(/レモンサワー/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("resyncSignalが渡されない場合（既存の呼び出し側）、ポーリング以外の余分な再取得は発生しない", async () => {
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [] });
+
+    render(<DrinkBoard storeId="store-1" />);
+    await screen.findByTestId("drink-board");
+
+    expect(mockListKitchenFeed).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createBrowserClient } from "@/lib/supabase/client";
 import {
   createStaffOperationsGateway,
@@ -91,11 +91,57 @@ import OrderItemStatusActions from "./OrderItemStatusActions";
  * useAdvanceOrderItemStatus.ts冒頭コメント参照）、確認ステップは一切
  * 経由しない。ボタン構成・文言（食/一品/ドリンクのジャンル別の差異、一品の
  * 直接完了ショートカット）はOrderItemStatusActions.tsx冒頭コメント参照。
+ *
+ * ## タスク7.6での更新: resyncSignal propとポーリング維持の判断
+ * 7.6（接続断表示と再同期、要件6.9）はKitchenBoardScreenで一度だけ
+ * `useRealtimeFeed`を配線する（"soldout"タブに切り替えてもフード/ドリンク
+ * ボードの購読が消えないよう、ボード個別ではなく画面レベルで配線する。
+ * 詳細はKitchenBoardScreen.tsx冒頭コメント「タスク7.6での更新」参照）。
+ * `onSync`が呼ばれるたびに単調増加する`resyncToken`を、現在表示中の
+ * ボードへ`resyncSignal` propとして渡す。本コンポーネントはこれを新設の
+ * 独立したeffect（下記参照）で検知し、`load(false)`と全く同じ意味論
+ * （成功時のみ表示を差し替え、失敗時は何もしない＝表示中のカードを
+ * エラー画面へ巻き戻さない）で背景フェッチを行う。
+ *
+ * 上のマウント時フェッチ+ポーリングeffect（`[gateway, storeId]`が依存配列）
+ * には一切手を加えていない。`resyncSignal`をそちらの依存配列へそのまま
+ * 追加すると、resyncSignalが変わるたびにeffect全体が再実行されて
+ * `load(true)`（失敗時に全画面エラーへ切り替える初期ロード専用の経路）が
+ * 呼ばれ直してしまう退行になるため、意図的に完全に独立したeffectとして
+ * 実装した（tasks.md 7.6のImplementation Notes参照）。`resyncSignal`が
+ * `undefined`（本コンポーネントの利用側がまだ再同期機構を持たない場合。
+ * 上記の大半の既存テストがこれに該当）の間、およびマウント時に渡された
+ * 初期値のままの間は一切発火しない（`lastResyncSignalRef`の初期化が
+ * 現在値そのものであるため）。
+ *
+ * ## ポーリングを維持する判断について（7.6着手時点の判断、DrinkBoard.tsxも同一）
+ * 本ファイル冒頭「更新方式についての設計判断」が「7.6が配線した際は
+ * 置き換え/補完される想定」としていた分岐点について、本タスクは「補完」を
+ * 選んだ（`FOOD_BOARD_POLL_INTERVAL_MS`は5000msのまま変更しない）。理由:
+ * `useRealtimeFeed`の`status === "connected"`はwebsocketの生存確認であり、
+ * あらゆる見逃しイベントに対する形式的な保証ではない
+ * （`postgres_changes_options: { wait: true }`により多くのエッジケースは
+ * 既に塞がれているが、useRealtimeFeed.ts冒頭コメント自身が「サーバー側の
+ * 購読登録が実際に完了する前にSUBSCRIBEDを報告しうる」という実機で踏んだ
+ * 落とし穴を記録しており、将来的な別の見逃しパターンを完全には否定
+ * できない）。厨房KDSは「画面が気づかれず古いままになる＝注文を見逃す」
+ * ことが実運用上の重大な事故に直結する製品であるため、Realtimeによる
+ * 即時反映（主経路）に加え、5秒間隔ポーリングを低コストな最終防衛線として
+ * 残す。DrinkBoard.tsxも同一の判断を共有し両ファイルの挙動を一致させる
+ * （tasks.md Implementation Notesの本タスクエントリにも記録する）。
  */
 export const FOOD_BOARD_POLL_INTERVAL_MS = 5000;
 
 type FoodBoardProps = {
   storeId: string;
+  /**
+   * タスク7.6: KitchenBoardScreenがuseRealtimeFeedのonSyncで発火させる
+   * 単調増加カウンタ。値が変化するたびに背景での再取得（load(false)相当）を
+   * 行う。省略時（呼び出し側が再同期機構を持たない場合。既存テストの
+   * 大半が該当）は一切発火しない。ファイル冒頭コメント「タスク7.6での
+   * 更新」参照。
+   */
+  resyncSignal?: number;
 };
 
 export type KitchenFeedItem = OrderItemSummary & {
@@ -194,21 +240,37 @@ function groupByStatus(
   return groups;
 }
 
-export default function FoodBoard({ storeId }: FoodBoardProps) {
+export default function FoodBoard({ storeId, resyncSignal }: FoodBoardProps) {
   const gateway = useMemo(
     () => createStaffOperationsGateway(createBrowserClient()),
     [],
   );
   const [state, setState] = useState<BoardState>({ status: "loading" });
 
+  // タスク7.6で追加: 「ローカルでの確定済み変更」が何回起きたかを数える
+  // 単調増加カウンタ。7.6のレビューで発見された競合——背景フェッチ
+  // （5秒ポーリングまたはresyncSignal起点の再取得）がユーザーのステータス
+  // 更新クリック（advance()、7.5）より前に開始され、そのクリックの
+  // サーバー確定済みマージより後に解決すると、背景フェッチが持つ古い
+  // スナップショット（クリック前の状態）で該当品目のstatusを丸ごと
+  // 上書きし、マージ結果を巻き戻してしまう——を防ぐために使う。
+  // 6.3のImplementation Notes「タイマー/ヒューリスティックではなく
+  // 単調増加するシーケンスカウンタでどちらが新しいかを判定する」という
+  // 確立済みの設計をそのまま踏襲する。
+  const mutationSeqRef = useRef(0);
+
   // タスク7.5: ステータス更新後の即時反映用。`state`が"ready"の場合のみ
   // 該当品目をマージする（読み込み中/エラー中はupdateItems自体を
   // useAdvanceOrderItemStatusから呼び出す機会が無いため、事実上到達しない）。
+  // タスク7.6で追加: このマージが「ローカルでの確定済み変更」そのものの
+  // ため、呼び出しのたびに`mutationSeqRef`をインクリメントする（上記コメント
+  // 参照）。
   function updateItems(
     updater: (
       prev: ReadonlyArray<KitchenFeedItem>,
     ) => ReadonlyArray<KitchenFeedItem>,
   ) {
+    mutationSeqRef.current += 1;
     setState((prev) =>
       prev.status === "ready"
         ? { status: "ready", items: updater(prev.items) }
@@ -237,6 +299,9 @@ export default function FoodBoard({ storeId }: FoodBoardProps) {
     // 決して現れない）ため、必ずtry/catchで捕捉する
     // （customerOrderingGateway/useDeviceIdentityで確立済みの既存規約）。
     async function load(isInitialLoad: boolean) {
+      // タスク7.6で追加: フェッチ開始時点のmutationSeqRefを記録する
+      // （ファイル冒頭のmutationSeqRef宣言コメント参照）。
+      const fetchSeq = mutationSeqRef.current;
       try {
         const result = await gateway.listKitchenFeed({ storeId });
         if (cancelled) {
@@ -248,6 +313,19 @@ export default function FoodBoard({ storeId }: FoodBoardProps) {
           if (isInitialLoad) {
             setState({ status: "error", message: GENERIC_ERROR_MESSAGE });
           }
+          return;
+        }
+        if (mutationSeqRef.current !== fetchSeq) {
+          // タスク7.6で追加: このフェッチが開始してから解決するまでの間に
+          // advance()によるローカルマージが発生した＝このフェッチが持つ
+          // スナップショットはそのマージより古い可能性がある。丸ごと
+          // 上書きすると、たった今マージしたばかりの新しいstatusを古い
+          // statusへ巻き戻してしまう（7.6レビューで発見された競合、
+          // tasks.md Implementation Notes参照）。このフェッチの結果は
+          // 破棄し、次回のポーリング/再同期に委ねる（その頃にはサーバー側の
+          // 実データ自体がこのマージ結果を反映済みのため、次回フェッチは
+          // 安全に適用できる）。isInitialLoadの場合は実質発生しない
+          // （読み込み中はまだadvance()のボタン自体が描画されないため）。
           return;
         }
         const foodItems = result.value.filter((item) =>
@@ -276,6 +354,60 @@ export default function FoodBoard({ storeId }: FoodBoardProps) {
       clearInterval(interval);
     };
   }, [gateway, storeId]);
+
+  // タスク7.6: resyncSignal（KitchenBoardScreenがuseRealtimeFeedのonSyncで
+  // 発火させる単調増加カウンタ）の変化を検知し、背景での再取得
+  // （load(false)と全く同じ意味論）を行う。上のマウント時フェッチ+
+  // ポーリングeffectとは意図的に完全に独立させている（ファイル冒頭コメント
+  // 「タスク7.6での更新」参照。resyncSignalをそちらの依存配列へ加えると
+  // effect全体が再実行されload(true)が呼ばれ直す退行になるため）。
+  const lastResyncSignalRef = useRef(resyncSignal);
+  useEffect(() => {
+    if (
+      resyncSignal === undefined ||
+      resyncSignal === lastResyncSignalRef.current
+    ) {
+      return;
+    }
+    lastResyncSignalRef.current = resyncSignal;
+
+    let cancelled = false;
+
+    async function resync() {
+      // タスク7.6レビューで追加: 上のload()と同じ理由（ファイル内
+      // mutationSeqRef宣言コメント参照）。resyncSignalは店舗全体の
+      // order_items変更（他卓・他端末の変更を含む）のたびに発火しうるため、
+      // このガードが無いとadvance()クリック直後にほぼ確実に競合しうる
+      // （load()のポーリングより遥かに高頻度で発火するため）。
+      const fetchSeq = mutationSeqRef.current;
+      try {
+        const result = await gateway.listKitchenFeed({ storeId });
+        if (cancelled || !result.ok) {
+          // result.ok === falseはload(true)と同じく実際には到達しない
+          // 防御的分岐だが、万一到達してもload(false)と同じく何もしない
+          // （既に表示中のカードを維持する。要件C: 背景フェッチは
+          // 決してエラー画面へ巻き戻さない）。
+          return;
+        }
+        if (mutationSeqRef.current !== fetchSeq) {
+          // load()と同じ理由でこのフェッチの結果は破棄する。
+          return;
+        }
+        const foodItems = result.value.filter((item) =>
+          FOOD_BOARD_GENRES.has(item.genre),
+        );
+        setState({ status: "ready", items: foodItems });
+      } catch {
+        // load(false)と同じ方針: 背景フェッチの失敗は画面を壊さないよう
+        // 握りつぶす（既に表示中のカードはそのまま維持される）。
+      }
+    }
+
+    void resync();
+    return () => {
+      cancelled = true;
+    };
+  }, [resyncSignal, gateway, storeId]);
 
   if (state.status === "loading") {
     return (

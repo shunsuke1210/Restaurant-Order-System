@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import KitchenBoardScreen from "./KitchenBoardScreen";
 
 // ensureDeviceSessionをモックし、KitchenBoardScreenのロジック（デバイス
@@ -33,6 +33,20 @@ vi.mock("@/lib/gateways/staffOperationsGateway", () => ({
   }),
 }));
 
+// タスク7.6: 接続断表示と再同期。useRealtimeFeed（タスク5で実装済み・
+// 単体テスト済み）はモックし、`status`を任意に操作し`onSync`を手動で
+// 発火できるようにする（本タスクのプロンプトが指示する
+// 「module-level vi.mock、既存のensureDeviceSession/
+// createStaffOperationsGatewayモックと同じパターン」）。実Supabase
+// クライアント（`createBrowserClient()`）はKitchenBoardScreen内部で
+// useMemo経由で生成されるがuseRealtimeFeed自体をモックするため未使用となり、
+// 実際にwebsocket接続を試みることはない。
+const mockUseRealtimeFeed = vi.fn();
+
+vi.mock("@/lib/realtime/useRealtimeFeed", () => ({
+  useRealtimeFeed: (...args: unknown[]) => mockUseRealtimeFeed(...args),
+}));
+
 describe("KitchenBoardScreen", () => {
   beforeEach(() => {
     mockEnsureDeviceSession.mockReset();
@@ -40,6 +54,10 @@ describe("KitchenBoardScreen", () => {
     mockListKitchenFeed.mockResolvedValue({ ok: true, value: [] });
     mockListMenuItems.mockReset();
     mockListMenuItems.mockResolvedValue({ ok: true, value: [] });
+    mockUseRealtimeFeed.mockReset();
+    // 既定値: 接続済み・onSyncは何もしない。接続断関連の振る舞いに
+    // 関心のない既存テストへ影響を与えないための最小限のデフォルト。
+    mockUseRealtimeFeed.mockReturnValue({ status: "connected" });
   });
 
   it("デバイスが未プロビジョニング（NOT_PROVISIONED）の場合、クラッシュせず案内メッセージを表示する", async () => {
@@ -161,5 +179,255 @@ describe("KitchenBoardScreen", () => {
       expect(header.contains(tablist)).toBe(true);
       expect(scrollArea.contains(tablist)).toBe(false);
     });
+  });
+});
+
+// =========================================================================
+// タスク7.6: 接続断表示と再同期
+// Requirements: 6.9
+//
+// mock-preview.html（renderKitchen関数・toggleKitchenConnection関数）が
+// 検証済みのUXをそのまま実装する: 常時表示の接続状態インジケーター、
+// disconnected中のみ表示する永続的な警告バナー、disconnected→connectedへの
+// 「真の遷移」でのみ表示する一時的な再接続バナー（2200ms後に自動的に
+// 消える）。useRealtimeFeed自体は単体テスト済み（useRealtimeFeed.test.ts）
+// のためモックし、`status`の変化とonSyncの発火をこのテストから直接
+// 制御する。
+// =========================================================================
+
+describe("KitchenBoardScreen（タスク7.6: 接続断表示と再同期）", () => {
+  let currentStatus: "connected" | "disconnected";
+  let capturedOnSync: (() => void) | null;
+
+  // このdescribeはトップレベルの兄弟ブロックであり、上の
+  // describe("KitchenBoardScreen", ...)のbeforeEach（モックのリセット・
+  // デフォルト値設定）を継承しない。モックはファイル内で共有される
+  // モジュールスコープの`vi.fn()`のため、他ブロックの残留状態に依存せず
+  // このブロック単独でも（`-t`等でのフィルタ実行時も）成立するよう、
+  // 必要なリセット・デフォルト値をここで明示的に行う。
+  beforeEach(() => {
+    mockEnsureDeviceSession.mockReset();
+    mockEnsureDeviceSession.mockResolvedValue({
+      ok: true,
+      value: { deviceUserId: "user-1", role: "kitchen", storeId: "store-1" },
+    });
+    mockListKitchenFeed.mockReset();
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [] });
+    mockListMenuItems.mockReset();
+    mockListMenuItems.mockResolvedValue({ ok: true, value: [] });
+
+    currentStatus = "connected";
+    capturedOnSync = null;
+    mockUseRealtimeFeed.mockReset();
+    mockUseRealtimeFeed.mockImplementation(
+      (options: { onSync: () => void }) => {
+        capturedOnSync = options.onSync;
+        return { status: currentStatus };
+      },
+    );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("マウント直後の初回接続では、接続中の表示のみで再接続バナーは表示されない", async () => {
+    render(<KitchenBoardScreen />);
+    await screen.findByTestId("food-board");
+
+    expect(screen.getByTestId("kitchen-connection-status")).toHaveTextContent(
+      "リアルタイム接続中",
+    );
+    expect(
+      screen.queryByTestId("kitchen-reconnected-banner"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("kitchen-disconnected-banner"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("disconnectedへ遷移すると、接続状態表示が切り替わり永続的な警告バナー（role=alert）が表示される", async () => {
+    const { rerender } = render(<KitchenBoardScreen />);
+    await screen.findByTestId("food-board");
+
+    currentStatus = "disconnected";
+    rerender(<KitchenBoardScreen />);
+
+    expect(screen.getByTestId("kitchen-connection-status")).toHaveTextContent(
+      "接続が切れています",
+    );
+    const banner = screen.getByTestId("kitchen-disconnected-banner");
+    expect(banner).toHaveAttribute("role", "alert");
+    expect(banner).toHaveTextContent(
+      "接続が切断されました。最新の注文が届いていない可能性があります。",
+    );
+    // mock-preview.html固有の「再接続する」ボタンは実際の製品UIに含めない
+    // （実際のRealtimeクライアントは自動的に再接続するため）。
+    expect(
+      screen.queryByRole("button", { name: /再接続する/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("disconnected→connectedへの真の遷移でのみ再接続バナーが表示され、2200ms後に自動的に消える", async () => {
+    vi.useFakeTimers();
+    const { rerender } = render(<KitchenBoardScreen />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByTestId("food-board")).toBeInTheDocument();
+
+    // 切断。
+    currentStatus = "disconnected";
+    rerender(<KitchenBoardScreen />);
+    expect(
+      screen.getByTestId("kitchen-disconnected-banner"),
+    ).toBeInTheDocument();
+
+    // 再接続（真の遷移）。
+    currentStatus = "connected";
+    rerender(<KitchenBoardScreen />);
+
+    expect(screen.getByTestId("kitchen-reconnected-banner")).toHaveTextContent(
+      "再接続しました。最新の注文一覧を取得しました。",
+    );
+    expect(
+      screen.queryByTestId("kitchen-disconnected-banner"),
+    ).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2199);
+    });
+    expect(screen.getByTestId("kitchen-reconnected-banner")).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(
+      screen.queryByTestId("kitchen-reconnected-banner"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("useRealtimeFeedのonSyncが呼ばれると、現在表示中のボードが背景で再取得する（ローディング状態には戻らない）", async () => {
+    render(<KitchenBoardScreen />);
+    await screen.findByTestId("food-board");
+    expect(mockListKitchenFeed).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      capturedOnSync?.();
+    });
+
+    await waitFor(() => expect(mockListKitchenFeed).toHaveBeenCalledTimes(2));
+    // 背景フェッチのため、ローディング表示に戻らずfood-boardが表示され続ける。
+    expect(screen.getByTestId("food-board")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("food-board-loading"),
+    ).not.toBeInTheDocument();
+  });
+
+  // 以下3件は7.6レビューで追加されたアドバーサリアルケース。
+
+  it("マウント直後からずっとdisconnectedのまま（一度も接続に至らない）でもクラッシュせず、永続的な警告バナーのみを表示する（再接続バナーは出さない）", async () => {
+    currentStatus = "disconnected";
+    render(<KitchenBoardScreen />);
+    await screen.findByTestId("food-board");
+
+    expect(screen.getByTestId("kitchen-connection-status")).toHaveTextContent(
+      "接続が切れています",
+    );
+    expect(
+      screen.getByTestId("kitchen-disconnected-banner"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("kitchen-reconnected-banner"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("statusがconnectedのまま変化せずonSyncだけが繰り返し発火しても（通常のorder_items変更イベント）、再接続バナーは一切表示されない（resyncTokenとバナー表示の分離）", async () => {
+    render(<KitchenBoardScreen />);
+    await screen.findByTestId("food-board");
+    expect(
+      screen.queryByTestId("kitchen-reconnected-banner"),
+    ).not.toBeInTheDocument();
+
+    await act(async () => {
+      capturedOnSync?.();
+      capturedOnSync?.();
+      capturedOnSync?.();
+    });
+
+    expect(
+      screen.queryByTestId("kitchen-reconnected-banner"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("kitchen-connection-status")).toHaveTextContent(
+      "リアルタイム接続中",
+    );
+  });
+
+  it("2200msの自動非表示より速いdisconnect→connect→disconnect→connectの連続切り替えでも、バナーが誤った状態のまま固着しない", async () => {
+    vi.useFakeTimers();
+    const { rerender } = render(<KitchenBoardScreen />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByTestId("food-board")).toBeInTheDocument();
+
+    // 切断。
+    currentStatus = "disconnected";
+    rerender(<KitchenBoardScreen />);
+    expect(
+      screen.getByTestId("kitchen-disconnected-banner"),
+    ).toBeInTheDocument();
+
+    // 再接続#1（真の遷移。再接続バナー表示、2200msタイマー開始）。
+    currentStatus = "connected";
+    rerender(<KitchenBoardScreen />);
+    expect(
+      screen.getByTestId("kitchen-reconnected-banner"),
+    ).toBeInTheDocument();
+
+    // 2200msのタイムアウトよりずっと早い300ms後に再び切断。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    currentStatus = "disconnected";
+    rerender(<KitchenBoardScreen />);
+    // 警告バナーへ即座に切り替わり、再接続バナーが居残らないこと。
+    expect(
+      screen.getByTestId("kitchen-disconnected-banner"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("kitchen-reconnected-banner"),
+    ).not.toBeInTheDocument();
+
+    // すぐに再接続#2。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    currentStatus = "connected";
+    rerender(<KitchenBoardScreen />);
+    expect(
+      screen.getByTestId("kitchen-reconnected-banner"),
+    ).toBeInTheDocument();
+
+    // 再接続#1由来の古いタイマー（2200-300=1900ms分の残り）が誤って
+    // 先に発火し、再接続#2のバナーを早期に消してしまわないことを確認する
+    // （古いタイマーは再接続#2の際にclearTimeoutされているはず）。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1900);
+    });
+    expect(
+      screen.getByTestId("kitchen-reconnected-banner"),
+    ).toBeInTheDocument();
+
+    // 再接続#2自身の2200ms（1900+300=2200ms）が経過すると消える。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(
+      screen.queryByTestId("kitchen-reconnected-banner"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("kitchen-disconnected-banner"),
+    ).not.toBeInTheDocument();
   });
 });

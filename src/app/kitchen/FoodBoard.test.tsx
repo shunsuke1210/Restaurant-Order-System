@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import FoodBoard, {
   FOOD_BOARD_POLL_INTERVAL_MS,
   type KitchenFeedItem,
@@ -447,5 +454,179 @@ describe("FoodBoard（タスク7.5: ステータス更新操作と即時反映�
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "ステータスの更新に失敗しました",
     );
+  });
+});
+
+// =========================================================================
+// タスク7.6: 接続断表示と再同期（resyncSignalによる背景再取得）
+// Requirements: 6.9
+//
+// KitchenBoardScreen（本タスクで配線済み）がuseRealtimeFeedのonSyncの
+// たびにインクリメントする`resyncSignal`propを渡す。本テスト群は
+// FoodBoard単体として、その値の変化が(a)ローディング状態に戻さず
+// 背景でlistKitchenFeedを再呼び出しすること、(b)背景フェッチが失敗しても
+// 既に表示中の品目をエラー画面へ巻き戻さないこと（アドバーサリアルケース、
+// tasks.md 7.6のArchitecture decisions C参照）を検証する。
+// =========================================================================
+
+describe("FoodBoard（タスク7.6: resyncSignalによる背景再取得）", () => {
+  beforeEach(() => {
+    idCounter = 0;
+    mockListKitchenFeed.mockReset();
+    mockUpdateOrderItemStatus.mockReset();
+  });
+
+  it("resyncSignalが変化すると、ローディング状態に戻さず背景でlistKitchenFeedを再呼び出しする", async () => {
+    const initial = makeItem({
+      name: "唐揚げ",
+      genre: "food",
+      status: "received",
+    });
+    mockListKitchenFeed.mockResolvedValueOnce({ ok: true, value: [initial] });
+
+    const { rerender } = render(
+      <FoodBoard storeId="store-1" resyncSignal={0} />,
+    );
+    expect(await screen.findByTestId("food-board")).toBeInTheDocument();
+    expect(mockListKitchenFeed).toHaveBeenCalledTimes(1);
+
+    const afterResync = makeItem({
+      name: "餃子",
+      genre: "food",
+      status: "received",
+    });
+    mockListKitchenFeed.mockResolvedValueOnce({
+      ok: true,
+      value: [afterResync],
+    });
+
+    rerender(<FoodBoard storeId="store-1" resyncSignal={1} />);
+
+    await waitFor(() => expect(mockListKitchenFeed).toHaveBeenCalledTimes(2));
+    // 背景フェッチのため、ローディング表示には一切戻らない。
+    expect(screen.queryByTestId("food-board-loading")).not.toBeInTheDocument();
+    expect(await screen.findByText(/餃子/)).toBeInTheDocument();
+  });
+
+  it("マウント時に渡されたresyncSignalの初期値では、余分な再取得を行わない", async () => {
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [] });
+
+    render(<FoodBoard storeId="store-1" resyncSignal={5} />);
+    await screen.findByTestId("food-board");
+
+    expect(mockListKitchenFeed).toHaveBeenCalledTimes(1);
+  });
+
+  it("resyncSignal変化時の背景フェッチが失敗しても、既存の表示中の品目をエラー画面へ巻き戻さない（アドバーサリアルケース）", async () => {
+    const existing = makeItem({
+      name: "唐揚げ",
+      genre: "food",
+      status: "received",
+    });
+    mockListKitchenFeed.mockResolvedValueOnce({ ok: true, value: [existing] });
+
+    const { rerender } = render(
+      <FoodBoard storeId="store-1" resyncSignal={0} />,
+    );
+    expect(await screen.findByTestId("food-board")).toBeInTheDocument();
+    expect(screen.getByText(/唐揚げ/)).toBeInTheDocument();
+
+    mockListKitchenFeed.mockRejectedValueOnce(new Error("network blip"));
+
+    rerender(<FoodBoard storeId="store-1" resyncSignal={1} />);
+
+    await waitFor(() => expect(mockListKitchenFeed).toHaveBeenCalledTimes(2));
+
+    // エラー画面へは切り替わらず、既存の品目がそのまま表示され続ける。
+    expect(screen.getByTestId("food-board")).toBeInTheDocument();
+    expect(screen.getByText(/唐揚げ/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("resyncSignalが渡されない場合（既存の呼び出し側）、ポーリング以外の余分な再取得は発生しない", async () => {
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [] });
+
+    render(<FoodBoard storeId="store-1" />);
+    await screen.findByTestId("food-board");
+
+    expect(mockListKitchenFeed).toHaveBeenCalledTimes(1);
+  });
+
+  // 7.6レビューで発見・修正した競合の回帰テスト（tasks.md Implementation
+  // Notes参照）: resyncSignal起点の背景フェッチがadvance()（7.5）による
+  // ローカルマージより前に開始し、そのマージより後に解決すると、背景
+  // フェッチが持つ古いスナップショットで該当品目のstatusを丸ごと上書きし、
+  // マージ結果を巻き戻してしまう競合があった。修正は`mutationSeqRef`
+  // （6.3で確立した「タイマーではなく単調増加するシーケンスカウンタで
+  // どちらが新しいかを判定する」設計の再利用）。
+  it("advance()によるローカルマージより前に開始した背景再取得が、そのマージより後に解決しても、マージ結果を巻き戻さない（7.6レビューで発見された競合の回帰テスト）", async () => {
+    const item = makeItem({
+      name: "唐揚げ",
+      genre: "food",
+      status: "received",
+    });
+    mockListKitchenFeed.mockResolvedValueOnce({ ok: true, value: [item] });
+
+    const { rerender } = render(
+      <FoodBoard storeId="store-1" resyncSignal={0} />,
+    );
+    expect(await screen.findByTestId("food-board")).toBeInTheDocument();
+    expect(mockListKitchenFeed).toHaveBeenCalledTimes(1);
+
+    // 他卓・他端末のorder_items変更によるresyncSignalの発火を模す。この
+    // 再取得は意図的に解決を保留し、古いスナップショット（statusは
+    // "received"のまま）を後から返す。
+    let resolveStaleFetch!: (value: {
+      ok: true;
+      value: KitchenFeedItem[];
+    }) => void;
+    const staleFetch = new Promise<{ ok: true; value: KitchenFeedItem[] }>(
+      (resolve) => {
+        resolveStaleFetch = resolve;
+      },
+    );
+    mockListKitchenFeed.mockReturnValueOnce(staleFetch);
+
+    rerender(<FoodBoard storeId="store-1" resyncSignal={1} />);
+    await waitFor(() => expect(mockListKitchenFeed).toHaveBeenCalledTimes(2));
+
+    // ユーザーが「調理開始」をクリックし、RPCが即座に確定応答を返す
+    // （7.5のadvance()セマンティクス）。
+    mockUpdateOrderItemStatus.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        ...item,
+        status: "in_progress",
+        statusUpdatedAt: "2026-01-01T03:05:00.000Z",
+      },
+    });
+    const card = (await screen.findAllByTestId("food-board-card"))[0];
+    fireEvent.click(within(card).getByRole("button", { name: "調理開始" }));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "調理開始" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("button", { name: "調理完了" }),
+    ).toBeInTheDocument();
+
+    // クリックより前に開始した背景再取得が、クリック後になって解決する。
+    // 返す内容はクリック前の古いstatus（"received"）のまま。
+    await act(async () => {
+      resolveStaleFetch({ ok: true, value: [item] });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // 古いスナップショットに巻き戻らず、マージ済みのin_progress状態が
+    // 維持され続けること。
+    expect(
+      screen.queryByRole("button", { name: "調理開始" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "調理完了" }),
+    ).toBeInTheDocument();
   });
 });
