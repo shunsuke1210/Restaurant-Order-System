@@ -5,6 +5,7 @@ import { ensureDeviceSession } from "@/lib/device/useDeviceIdentity";
 import KitchenTabs, { KITCHEN_TABS, type KitchenTabId } from "./KitchenTabs";
 import FoodBoard from "./FoodBoard";
 import DrinkBoard from "./DrinkBoard";
+import SoldOutBoard from "./SoldOutBoard";
 
 /**
  * 厨房KDS画面の実体（design.md「KitchenBoard」コンポーネント）。
@@ -13,16 +14,15 @@ import DrinkBoard from "./DrinkBoard";
  * Design: .kiro/specs/table-order-kitchen/design.md の「KitchenBoard」
  *   （Presentation Layer summary）を参照。
  *
- * ## 本タスク（7.1）のスコープ
- * タスク7.1は「3タブ共通シェルと固定ヘッダー」のみを担う。以下は明示的に
- * スコープ外（tasks.mdの後続タスクが担当）であり、本コンポーネントは
- * これらを一切行わない:
- * - フード/ドリンク/売り切れの各ボードの実データ表示（7.2-7.4）
- * - `StaffOperationsGateway.listKitchenFeed`の呼び出し（7.2/7.3が
- *   実データ表示と合わせて配線する）
+ * ## 本タスク（7.1）のスコープ（歴史的経緯）
+ * タスク7.1は当初「3タブ共通シェルと固定ヘッダー」のみを担い、各タブの
+ * 内容は簡易なプレースホルダー文言のみだった。7.2/7.3/7.4が順に
+ * フード/ドリンク/売り切れの各ボードの実データ表示を実装し、7.1時点の
+ * プレースホルダーはすべて置き換え済みである（下記「タスク7.2/7.3/7.4での
+ * 更新」参照）。以下は本コンポーネント自体は依然として行わない
+ * （tasks.mdの後続タスクが担当）:
  * - `useRealtimeFeed`の配線・接続断表示（7.6）
- * - ステータス更新操作（7.5）
- * そのため各タブの内容は簡易なプレースホルダー文言のみとする。
+ * - ステータス更新操作（7.5、フード/ドリンクボードの品目カードのクリック）
  *
  * ## タスク7.2での更新: フードボードタブの実データ表示への置き換え
  * 7.2は上記スコープのうち「フードボードの実データ表示」のみを実装する
@@ -38,6 +38,14 @@ import DrinkBoard from "./DrinkBoard";
  * プレースホルダーのまま、7.4のスコープ）。"drink"タブ選択中は、7.1時点の
  * プレースホルダー文言の代わりに`DrinkBoard`（`./DrinkBoard.tsx`）へ
  * 委譲する。配線方法・propsは"food"タブの`FoodBoard`と全く同型。
+ *
+ * ## タスク7.4での更新: 売り切れボードタブの実データ表示への置き換え
+ * 7.4は「売り切れボードの実データ表示（品目検索・サマリー・売り切れ切り替えの
+ * 確認モーダル）」を実装する。"soldout"タブ選択中は、7.1時点のプレースホルダー
+ * 文言の代わりに`SoldOutBoard`（`./SoldOutBoard.tsx`）へ委譲する。配線方法・
+ * propsは"food"/"drink"タブと全く同型。これで3タブすべてが実データ表示に
+ * 置き換わったため、プレースホルダー分岐（`PLACEHOLDER_TEXT`）は不要になり
+ * 削除した。
  *
  * ## デバイスセッション確認について（タスク9.1との役割分担）
  * `/kitchen`はデバイス識別基盤（タスク2.1-2.3）が要求するkitchen-role
@@ -84,14 +92,6 @@ const WRONG_ROLE_MESSAGE =
 
 const GENERIC_DEVICE_ERROR_MESSAGE =
   "デバイスの確認中に予期しないエラーが発生しました。ネットワーク接続をご確認のうえ、画面を再読み込みしてください。";
-
-// "food"は7.2でFoodBoard、"drink"は7.3でDrinkBoard（いずれも実データ表示）
-// へ置き換え済みのため対象外（下記レンダリング分岐参照）。売り切れは
-// 引き続き7.4が実装するまでの簡易プレースホルダー文言のみ。
-const PLACEHOLDER_TEXT: Record<Exclude<KitchenTabId, "food" | "drink">, string> =
-  {
-    soldout: "売り切れボード（実装は7.4）",
-  };
 
 export default function KitchenBoardScreen() {
   const [view, setView] = useState<ViewState>({ status: "checking-device" });
@@ -191,12 +191,7 @@ export default function KitchenBoardScreen() {
         ) : activeTab === "drink" ? (
           <DrinkBoard storeId={view.storeId} />
         ) : (
-          <p
-            data-testid="kitchen-board-placeholder"
-            className="p-4 text-sm text-neutral-500"
-          >
-            {PLACEHOLDER_TEXT[activeTab]}
-          </p>
+          <SoldOutBoard storeId={view.storeId} />
         )}
       </div>
     </div>

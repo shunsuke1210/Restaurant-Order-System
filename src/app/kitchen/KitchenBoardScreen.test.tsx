@@ -20,11 +20,16 @@ vi.mock("@/lib/device/useDeviceIdentity", () => ({
 // KitchenBoardScreen固有の関心事（タブ切り替え・固定ヘッダー構造）を
 // 阻害しないよう空配列を返す最小限のモックに留める
 // （MenuScreen.test.tsxのcustomerOrderingGatewayモックと同型の方式）。
+// タスク7.4: 同じ理由でlistMenuItems（SoldOutBoardが使用）も空配列を返す
+// 最小限のモックを追加する。SoldOutBoard自体の詳細な振る舞い（検索・
+// サマリー・確認モーダル）はSoldOutBoard.test.tsxで専用に検証する。
 const mockListKitchenFeed = vi.fn();
+const mockListMenuItems = vi.fn();
 
 vi.mock("@/lib/gateways/staffOperationsGateway", () => ({
   createStaffOperationsGateway: () => ({
     listKitchenFeed: (...args: unknown[]) => mockListKitchenFeed(...args),
+    listMenuItems: (...args: unknown[]) => mockListMenuItems(...args),
   }),
 }));
 
@@ -33,6 +38,8 @@ describe("KitchenBoardScreen", () => {
     mockEnsureDeviceSession.mockReset();
     mockListKitchenFeed.mockReset();
     mockListKitchenFeed.mockResolvedValue({ ok: true, value: [] });
+    mockListMenuItems.mockReset();
+    mockListMenuItems.mockResolvedValue({ ok: true, value: [] });
   });
 
   it("デバイスが未プロビジョニング（NOT_PROVISIONED）の場合、クラッシュせず案内メッセージを表示する", async () => {
@@ -118,17 +125,19 @@ describe("KitchenBoardScreen", () => {
       expect(foodTab).toHaveAttribute("aria-selected", "false");
 
       fireEvent.click(soldoutTab);
-      expect(screen.getByTestId("kitchen-board-placeholder")).toHaveTextContent(
-        "売り切れボード（実装は7.4）",
-      );
+      // タスク7.4でソールドアウトボードのプレースホルダーはSoldOutBoardへ
+      // 置き換わった。SoldOutBoard自体の中身の検証（検索・サマリー・確認
+      // モーダル等）はSoldOutBoard.test.tsxが専用に担うため、ここでは
+      // KitchenBoardScreenの責務——正しいタブ選択状態でSoldOutBoardが
+      // マウントされること——のみを検証する。
+      expect(await screen.findByTestId("soldout-board")).toBeInTheDocument();
       expect(screen.queryByTestId("drink-board")).not.toBeInTheDocument();
       expect(soldoutTab).toHaveAttribute("aria-selected", "true");
+      expect(mockListMenuItems).toHaveBeenCalledWith({ storeId: "store-1" });
 
       fireEvent.click(foodTab);
       expect(await screen.findByTestId("food-board")).toBeInTheDocument();
-      expect(
-        screen.queryByText("売り切れボード（実装は7.4）"),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByTestId("soldout-board")).not.toBeInTheDocument();
     });
 
     it("固定ヘッダー（タブバー含む）とスクロール領域は兄弟要素であり、タブバーはスクロール領域の子孫ではない", async () => {

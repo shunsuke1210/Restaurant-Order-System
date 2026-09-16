@@ -202,7 +202,7 @@ stateDiagram-v2
 | 6.3, 6.4 | ジャンル別のステータス体系（フード/一品は3段階、ドリンクは2段階） | Schema & RLS Foundation, StaffOperationsGateway | `updateOrderItemStatus`（ジャンルに応じた遷移検証） | 品目ステータスの状態遷移 |
 | 6.6, 6.7 | 一品の直接完了ショートカットと未対応リストでの優先表示 | StaffOperationsGateway | `updateOrderItemStatus`, `listKitchenFeed`（並び替え） | 品目ステータスの状態遷移 |
 | 6.10 | 調理完了リストの直近完了順表示 | StaffOperationsGateway, Schema & RLS Foundation | `listKitchenFeed`（`status_updated_at`降順） | 品目ステータスの状態遷移 |
-| 7.1-7.4 | 売り切れ登録・解除・既存注文への非影響 | StaffOperationsGateway | `setSoldOut` | - |
+| 7.1-7.4 | 売り切れ登録・解除・既存注文への非影響 | StaffOperationsGateway | `setSoldOut`, `listMenuItems`（タスク7.4で新規追加。上記Responsibilities & Constraints参照） | - |
 | 8.1-8.3 | 客/厨房/レジ通常モードの無ログイン | DeviceIdentityProvider, Schema & RLS Foundation | `ensureDeviceSession` | - |
 
 ## Components and Interfaces
@@ -408,6 +408,7 @@ type CallRequestError = { code: "SESSION_NOT_ACTIVE" } | { code: "CALL_ALREADY_O
 - `listRegisterFeed`は各卓の現在アクティブなセッションの人数・注文明細・合計金額を返す（要件5.1, 5.4）。アクティブセッションがない卓は`activeSession: null`として返し、UI側で「会計対象なし」と表示する（要件5.2）。この合計計算は`CustomerOrderingGateway.getOrderingContext`が返す`confirmedTotal`と同一のロジックを共有する
 - `listRegisterFeed`は各卓に紐づくアクティブセッションに未対応（`open`）の呼び出しが存在するかを`hasOpenCallRequest`として返し、卓マップの呼び出し中バッジの表示・再接続時の再同期の両方を支える（要件2.2）
 - `addOrderItem` / `removeOrderItem` / `updateOrderItemStatus`（レジ起点）/ `setSoldOut` / `closeSession` の実行前確認（要件3.3, 5.5-5.7, 7.1, 7.3）はUI層（RegisterConsole / KitchenBoard）の責務とし、本Gatewayは確認済みの操作のみを受け取る。RPC自体に「確認フラグ」は持たせない
+- `listMenuItems`（タスク7.4で新規追加。CONCERN: 詳細は`0011_list_menu_items.sql`冒頭コメント参照）は、厨房の売り切れボード（KitchenBoard/SoldOutBoard.tsx）が切り替え対象の品目を選ぶための一覧を返す閲覧系メソッドである。`setSoldOut`が既に`menuItemId`を知っている前提の単一品目操作であるのに対し、「どの品目を対象にするか」を選ぶための一覧を返すメソッドがStaffOperationsGateway/CustomerOrderingGatewayのいずれにも存在しないというギャップがタスク7.4で判明し、追加した。`setSoldOut`と同じ理由（要件7のAcceptance Criteriaがいずれも「厨房スタッフ」を主語とすること）により`kitchen`ロール限定とし、`register`ロールからの呼び出しは`FORBIDDEN`とする。`listKitchenFeed`/`listRegisterFeed`と同様、業務エラーを持たない純粋な一覧取得のため、エラー型は`never`とする
 
 **Dependencies**
 - Inbound: KitchenBoard (UI), RegisterConsole (UI) — 厨房/レジ画面からの呼び出し (P0)
@@ -429,6 +430,20 @@ interface StaffOperationsGateway {
   resolveCallRequest(input: ResolveCallRequestInput): Promise<Result<CallRequest, ResolveCallRequestError>>;
   listKitchenFeed(input: ListFeedInput): Promise<Result<ReadonlyArray<OrderItemSummary & { tableId: string; tableLabel: string; genre: MenuItemGenre }>, never>>;
   listRegisterFeed(input: ListFeedInput): Promise<Result<ReadonlyArray<TableBillingSummary>, never>>;
+  // タスク7.4で新規追加（CONCERN。上記Responsibilities & Constraints参照）。
+  // 入力はlistKitchenFeed/listRegisterFeedと同じListFeedInputを再利用する。
+  listMenuItems(input: ListFeedInput): Promise<Result<ReadonlyArray<MenuItemListing>, never>>;
+}
+
+// タスク7.4で新規追加。setSoldOutの戻り値であるMenuItem型（storeIdを含む）
+// とは異なり、一覧表示に必要な最小限のキーのみを持つ（storeIdは入力の
+// p_store_idと同一値になり各要素へ繰り返し含める意味がないため省略）。
+interface MenuItemListing {
+  id: string;
+  name: string;
+  price: number;
+  soldOut: boolean;
+  genre: MenuItemGenre;
 }
 
 type MenuItemGenre = "ippin" | "food" | "drink";
@@ -619,7 +634,7 @@ type DeviceProvisioningError = { code: "INVALID_SETUP_CODE" } | { code: "NOT_PRO
 客の卓側QR注文画面。`CustomerOrderingGateway`のみに依存し、新たな責務境界は導入しない。すべて/一品/フード/ドリンクのジャンル別タブ（`menu_items.genre`の値域に基づく。「おすすめ」相当の独立した分類列は現状のデータモデルにないため実装しない）と、品目の写真・オプション選択UIを提供する。画面下部に確定注文合計を常時表示し、同席者の別端末からの注文にも追随して更新する（要件1.12）。更新方式は`getOrderingContext`の定期ポーリング（5秒間隔）であり、Realtimeの`postgres_changes`購読は用いない（タスク6.2で確定。理由: `anon`ロールへの`order_items`等のSELECT権限拡大を避けるため。詳細は`0008_realtime_publication.sql`および`MenuScreen.tsx`冒頭コメント参照）。ネットワーク断時は送信失敗を明示し再試行を促す（要件1.11）。アクティブセッションが存在する間、呼び出しボタンを表示する（要件2.1）。タップすると`createCallRequest`を呼び出し、成功または`CALL_ALREADY_OPEN`（既に未対応の呼び出しがある、要件2.3）のいずれの場合も「呼び出し中」の再送不可な状態を表示する。対応済み（`resolved`）になったことは、`hasOpenCallRequest`（タスク6.3で追加、`OrderingContext`）を同じ`getOrderingContext`ポーリングで検知し、ボタンを再度押せる状態へ戻す（新しいRealtime購読・新しいポーリングループを追加しない。0010_ordering_context_call_request.sqlおよび`CallButton.tsx`冒頭コメント参照）。
 
 #### KitchenBoard
-厨房画面。`StaffOperationsGateway`と`RealtimeFeed`に依存し、フードボード／ドリンクボード／売り切れボードの3タブを1台のタブレットで切り替える構成とする。各ボードは卓・受注時刻が識別できる一覧表示とジャンルに応じたステータス更新UIを提供し、フードボードの未対応列は一品ジャンルを優先表示し（要件6.7、6.8）、調理完了列は直近に完了したものを上部に表示する（要件6.10）。売り切れの登録・解除操作は実行前に確認ダイアログを表示し、確認後にのみ`setSoldOut`を呼び出す（要件7.1, 7.3）。
+厨房画面。`StaffOperationsGateway`と`RealtimeFeed`に依存し、フードボード／ドリンクボード／売り切れボードの3タブを1台のタブレットで切り替える構成とする。各ボードは卓・受注時刻が識別できる一覧表示とジャンルに応じたステータス更新UIを提供し、フードボードの未対応列は一品ジャンルを優先表示し（要件6.7、6.8）、調理完了列は直近に完了したものを上部に表示する（要件6.10）。売り切れの登録・解除操作は実行前に確認ダイアログを表示し、確認後にのみ`setSoldOut`を呼び出す（要件7.1, 7.3）。売り切れボード（`SoldOutBoard.tsx`、タスク7.4）は対象品目を選ぶための一覧を`listMenuItems`（タスク7.4で新規追加、上記Responsibilities & Constraints参照）から取得し、品目名検索・現在売り切れ中の件数サマリーを提供する。
 
 **既知の制約（要件6.8、タスク7.2で判明）**: `OrderItemSummary`は`statusUpdatedAt`（直近のステータス変更時刻）のみを公開し、独立した受注時刻フィールドを持たない。未対応（`received`）列では`status_updated_at`が挿入時に一度だけ設定されるため実質的に受注時刻と一致するが、調理中/調理完了列では「直近のステータス変更時刻」を示すことになり、厳密な意味での受注時刻とは異なる。境界内で実際に取得可能なこのフィールドをそのまま表示することは妥当な判断だが、完全な是正には`list_kitchen_feed`（4.5）への受注時刻（`orders.created_at`）フィールド追加とdesign.md改訂が必要（Revalidation Triggers対象の将来課題として記録）。
 

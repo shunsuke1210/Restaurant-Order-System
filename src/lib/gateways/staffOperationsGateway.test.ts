@@ -63,7 +63,7 @@ describe("createStaffOperationsGateway", () => {
     gateway = createStaffOperationsGateway(client);
   });
 
-  it("10個のメソッドを持つゲートウェイオブジェクトを返す（DIファクトリ）", () => {
+  it("11個のメソッドを持つゲートウェイオブジェクトを返す（DIファクトリ）", () => {
     expect(typeof gateway.startSession).toBe("function");
     expect(typeof gateway.closeSession).toBe("function");
     expect(typeof gateway.updatePartySize).toBe("function");
@@ -74,6 +74,7 @@ describe("createStaffOperationsGateway", () => {
     expect(typeof gateway.resolveCallRequest).toBe("function");
     expect(typeof gateway.listKitchenFeed).toBe("function");
     expect(typeof gateway.listRegisterFeed).toBe("function");
+    expect(typeof gateway.listMenuItems).toBe("function");
   });
 
   describe("startSession", () => {
@@ -842,6 +843,71 @@ describe("createStaffOperationsGateway", () => {
       ).rejects.toThrow(/boom/);
     });
   });
+
+  describe("listMenuItems", () => {
+    it("list_menu_itemsをp_store_idで呼び出し、成功応答を配列へ整形する", async () => {
+      rpc.mockResolvedValueOnce({
+        data: [
+          {
+            id: "item-1",
+            name: "唐揚げ",
+            price: 600,
+            soldOut: false,
+            genre: "food",
+          },
+          {
+            id: "item-2",
+            name: "レモンサワー",
+            price: 400,
+            soldOut: true,
+            genre: "drink",
+          },
+        ],
+        error: null,
+      });
+
+      const result = await gateway.listMenuItems({ storeId: "store-1" });
+
+      expect(rpc).toHaveBeenCalledWith("list_menu_items", {
+        p_store_id: "store-1",
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: [
+          { id: "item-1", name: "唐揚げ", price: 600, soldOut: false, genre: "food" },
+          {
+            id: "item-2",
+            name: "レモンサワー",
+            price: 400,
+            soldOut: true,
+            genre: "drink",
+          },
+        ],
+      });
+    });
+
+    it("design.mdの`never`エラー型: FORBIDDEN（P0403）でさえResultのエラーにならず例外として伝播する", async () => {
+      rpc.mockResolvedValueOnce({
+        data: null,
+        error: samplePostgrestError("P0403", { message: "forbidden" }),
+      });
+
+      await expect(
+        gateway.listMenuItems({ storeId: "store-1" }),
+      ).rejects.toThrow(/forbidden/);
+    });
+
+    it("design.mdの`never`エラー型: あらゆる未知のSQLSTATEも例外として伝播する", async () => {
+      rpc.mockResolvedValueOnce({
+        data: null,
+        error: samplePostgrestError("XX000", { message: "boom" }),
+      });
+
+      await expect(
+        gateway.listMenuItems({ storeId: "store-1" }),
+      ).rejects.toThrow(/boom/);
+    });
+  });
 });
 
 // ===========================================================================
@@ -849,7 +915,8 @@ describe("createStaffOperationsGateway", () => {
 // チェックを通過する」（tasks.md 4.6）。
 //
 // 以下の8関数は、design.mdが定義する各エラー共用体（listKitchenFeed/
-// listRegisterFeedの`never`を除く8つ）のメンバーを漏れなくswitchで処理し、
+// listRegisterFeed/listMenuItemsの`never`を除く8つ）のメンバーを漏れなく
+// switchで処理し、
 // default節でnever型チェック（exhaustiveCheck）を行う。共用体にメンバーを
 // 追加/削除すると、default節の`const exhaustiveCheck: never = errorValue`が
 // コンパイルエラーになるため、tsc --noEmit（npm run typecheck）自体が

@@ -15,11 +15,12 @@ import type {
  * StaffOperationsGateway — 厨房/レジ（device_role='kitchen'|'register'の
  * authenticated匿名デバイス）向け操作の型付きTypeScriptラッパー。design.md
  * 「StaffOperationsGateway」コンポーネントのService Interfaceで定義された
- * 10メソッド（startSession / closeSession / updatePartySize / addOrderItem /
+ * 11メソッド（startSession / closeSession / updatePartySize / addOrderItem /
  * removeOrderItem / updateOrderItemStatus / setSoldOut / resolveCallRequest /
- * listKitchenFeed / listRegisterFeed）を、0004_rpc_staff_gateway.sqlが実装する
- * Postgres RPC（同名のsnake_case関数、いずれもタスク4.1〜4.5で実装済み・
- * 本タスクのスコープ外＝読み取り専用の参照先）へ委譲する。
+ * listKitchenFeed / listRegisterFeed / listMenuItems）を、
+ * 0004_rpc_staff_gateway.sql（4.1〜4.5、10メソッド分）および
+ * 0011_list_menu_items.sql（タスク7.4で新規追加のlistMenuItems）が実装する
+ * Postgres RPC（同名のsnake_case関数）へ委譲する。
  *
  * Requirements: 2.2, 2.4, 3.1, 3.2, 3.3, 3.4, 3.5, 4.1, 4.2, 4.3, 4.4,
  *   5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7,
@@ -226,6 +227,18 @@ export interface TableBillingSummary {
   hasOpenCallRequest: boolean;
 }
 
+// タスク7.4で新規追加（design.mdのStaffOperationsGateway Responsibilities &
+// Constraints「listMenuItems」参照。CONCERN: 0011_list_menu_items.sql冒頭
+// コメントに詳細な判断理由あり）。setSoldOutの戻り値であるMenuItem型
+// （storeIdを含む）とは異なり、一覧表示に必要な最小限のキーのみを持つ。
+export interface MenuItemListing {
+  id: string;
+  name: string;
+  price: number;
+  soldOut: boolean;
+  genre: MenuItemGenre;
+}
+
 export interface StaffOperationsGateway {
   startSession(
     input: StartSessionInput,
@@ -266,6 +279,11 @@ export interface StaffOperationsGateway {
   listRegisterFeed(
     input: ListFeedInput,
   ): Promise<Result<ReadonlyArray<TableBillingSummary>, never>>;
+  // タスク7.4で新規追加。design.mdの`listMenuItems`（Service Interface内、
+  // ListFeedInputを再利用）に対応する。
+  listMenuItems(
+    input: ListFeedInput,
+  ): Promise<Result<ReadonlyArray<MenuItemListing>, never>>;
 }
 
 // ===========================================================================
@@ -501,6 +519,24 @@ function toKitchenFeed(
   }));
 }
 
+function toMenuItemListing(data: Json): ReadonlyArray<MenuItemListing> {
+  const raw = data as unknown as ReadonlyArray<{
+    id: string;
+    name: string;
+    price: number;
+    soldOut: boolean;
+    genre: MenuItemGenre;
+  }>;
+
+  return raw.map((item) => ({
+    id: item.id,
+    name: item.name,
+    price: item.price,
+    soldOut: item.soldOut,
+    genre: item.genre,
+  }));
+}
+
 function toRegisterFeed(data: Json): ReadonlyArray<TableBillingSummary> {
   const raw = data as unknown as ReadonlyArray<{
     tableId: string;
@@ -714,6 +750,21 @@ export function createStaffOperationsGateway(
       }
 
       return ok(toRegisterFeed(data));
+    },
+
+    async listMenuItems(input) {
+      const { data, error } = await client.rpc("list_menu_items", {
+        p_store_id: input.storeId,
+      });
+
+      if (error) {
+        // design.mdの`never`エラー型（listKitchenFeed/listRegisterFeedと
+        // 同じ理由。ファイル冒頭コメント参照）: 空のマッピングに対し
+        // mapPostgrestErrorは常に例外を投げる。
+        throw mapPostgrestError(error, NO_ERROR_MAPPING, "list_menu_items");
+      }
+
+      return ok(toMenuItemListing(data));
     },
   };
 }
