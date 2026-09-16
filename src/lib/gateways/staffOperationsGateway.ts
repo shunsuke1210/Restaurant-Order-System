@@ -227,6 +227,10 @@ export interface TableBillingSummary {
   // 表示できなかった）を解消するため`optionsSummary`/`status`も追加した
   // （0012冒頭コメント参照。`status`は8.3のUIでは表示せず、8.4向けに
   // 値のみ先取りする）。
+  // タスク8.4で拡張（0014_list_register_feed_item_genre.sql）: 0012が
+  // 明示的に本タスクへ委ねていた判断（statusのジャンルに応じた日本語表示・
+  // 進めるボタンの次ステータス判定にはgenreが必須）を実行し、`genre`を
+  // 追加した（list_kitchen_feedと同じmenu_itemsへのjoinで取得）。
   items: ReadonlyArray<{
     id: string;
     menuItemId: string;
@@ -235,6 +239,7 @@ export interface TableBillingSummary {
     unitPrice: number;
     optionsSummary: string | null;
     status: OrderItemStatus;
+    genre: MenuItemGenre;
   }>;
   total: number;
   hasOpenCallRequest: boolean;
@@ -586,6 +591,7 @@ function toRegisterFeed(data: Json): ReadonlyArray<TableBillingSummary> {
       unitPrice: number;
       optionsSummary: string | null;
       status: OrderItemStatus;
+      genre: MenuItemGenre;
     }>;
     total: number;
     hasOpenCallRequest: boolean;
@@ -609,6 +615,7 @@ function toRegisterFeed(data: Json): ReadonlyArray<TableBillingSummary> {
       unitPrice: item.unitPrice,
       optionsSummary: item.optionsSummary,
       status: item.status,
+      genre: item.genre,
     })),
     total: table.total,
     hasOpenCallRequest: table.hasOpenCallRequest,

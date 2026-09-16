@@ -27,6 +27,7 @@ const mockStartSession = vi.fn();
 const mockAddOrderItem = vi.fn();
 const mockRemoveOrderItem = vi.fn();
 const mockListMenuItems = vi.fn();
+const mockUpdateOrderItemStatus = vi.fn();
 
 vi.mock("@/lib/gateways/staffOperationsGateway", () => ({
   createStaffOperationsGateway: () => ({
@@ -35,6 +36,8 @@ vi.mock("@/lib/gateways/staffOperationsGateway", () => ({
     addOrderItem: (...args: unknown[]) => mockAddOrderItem(...args),
     removeOrderItem: (...args: unknown[]) => mockRemoveOrderItem(...args),
     listMenuItems: (...args: unknown[]) => mockListMenuItems(...args),
+    updateOrderItemStatus: (...args: unknown[]) =>
+      mockUpdateOrderItemStatus(...args),
   }),
 }));
 
@@ -69,6 +72,8 @@ function makeBillingItem(
     unitPrice: 100,
     optionsSummary: null,
     status: "received",
+    // タスク8.4で追加（0014_list_register_feed_item_genre.sql）。
+    genre: "food",
     ...overrides,
   };
 }
@@ -82,6 +87,7 @@ describe("FloorMap", () => {
     mockAddOrderItem.mockReset();
     mockRemoveOrderItem.mockReset();
     mockListMenuItems.mockReset();
+    mockUpdateOrderItemStatus.mockReset();
     // タスク8.3で追加: FloorMapはマウント時に常にlistMenuItemsを呼び出す
     // ため、それを検証しないテストのための既定値（空配列）を用意する。
     mockListMenuItems.mockResolvedValue({ ok: true, value: [] });
@@ -926,6 +932,227 @@ describe("FloorMap", () => {
           "register-floor-tile-total",
         ),
       ).toHaveTextContent("¥0");
+    });
+  });
+
+  // タスク8.4: 品目ステータス変更UI（確認モーダル）。
+  // Requirements: 5.7
+  describe("品目のステータス変更（タスク8.4）", () => {
+    it("確認後にupdateOrderItemStatusを正しい引数で呼び出し、成功時にステータス表示が更新される（本タスクの観測可能な完了条件）", async () => {
+      const item = makeBillingItem({
+        name: "唐揚げ",
+        genre: "food",
+        status: "received",
+      });
+      const occupied = makeTable({
+        tableLabel: "T1",
+        activeSession: {
+          id: "session-1",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          partySize: 2,
+        },
+        items: [item],
+        total: item.unitPrice,
+      });
+      mockListRegisterFeed.mockResolvedValue({ ok: true, value: [occupied] });
+      mockUpdateOrderItemStatus.mockResolvedValueOnce({
+        ok: true,
+        value: {
+          id: item.id,
+          menuItemId: item.menuItemId,
+          name: item.name,
+          unitPrice: item.unitPrice,
+          quantity: item.quantity,
+          optionsSummary: null,
+          status: "in_progress",
+          statusUpdatedAt: "2026-01-01T00:00:01.000Z",
+        },
+      });
+
+      render(<FloorMap storeId="store-1" />);
+      fireEvent.click(await screen.findByTestId("register-floor-tile-T1"));
+      expect(
+        screen.getByTestId("register-table-detail-item-status"),
+      ).toHaveTextContent("未対応");
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "唐揚げのステータスを進める" }),
+      );
+      fireEvent.click(screen.getByTestId("register-status-confirm-confirm"));
+
+      await waitFor(() =>
+        expect(mockUpdateOrderItemStatus).toHaveBeenCalledWith({
+          orderItemId: item.id,
+          status: "in_progress",
+        }),
+      );
+
+      // ステータス表示が「未対応」→「調理中」へ更新される（完了条件そのもの）。
+      expect(
+        await screen.findByTestId("register-table-detail-item-status"),
+      ).toHaveTextContent("調理中");
+    });
+
+    it("確認モーダルの「いいえ」を選ぶと、updateOrderItemStatusが呼ばれずステータス表示が変化しない（要件5.7）", async () => {
+      const item = makeBillingItem({
+        name: "唐揚げ",
+        genre: "food",
+        status: "received",
+      });
+      const occupied = makeTable({
+        tableLabel: "T1",
+        activeSession: {
+          id: "session-1",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          partySize: 2,
+        },
+        items: [item],
+        total: item.unitPrice,
+      });
+      mockListRegisterFeed.mockResolvedValue({ ok: true, value: [occupied] });
+
+      render(<FloorMap storeId="store-1" />);
+      fireEvent.click(await screen.findByTestId("register-floor-tile-T1"));
+      fireEvent.click(
+        await screen.findByRole("button", {
+          name: "唐揚げのステータスを進める",
+        }),
+      );
+      fireEvent.click(screen.getByTestId("register-status-confirm-cancel"));
+
+      expect(mockUpdateOrderItemStatus).not.toHaveBeenCalled();
+      expect(
+        screen.getByTestId("register-table-detail-item-status"),
+      ).toHaveTextContent("未対応");
+    });
+
+    it("INVALID_TRANSITION等の失敗時は汎用エラーメッセージを表示し、ローカル状態（ステータス表示）を変更しない", async () => {
+      const item = makeBillingItem({
+        name: "唐揚げ",
+        genre: "food",
+        status: "received",
+      });
+      const occupied = makeTable({
+        tableLabel: "T1",
+        activeSession: {
+          id: "session-1",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          partySize: 2,
+        },
+        items: [item],
+        total: item.unitPrice,
+      });
+      mockListRegisterFeed.mockResolvedValue({ ok: true, value: [occupied] });
+      mockUpdateOrderItemStatus.mockResolvedValueOnce({
+        ok: false,
+        error: {
+          code: "INVALID_TRANSITION",
+          from: "received",
+          to: "in_progress",
+        },
+      });
+
+      render(<FloorMap storeId="store-1" />);
+      fireEvent.click(await screen.findByTestId("register-floor-tile-T1"));
+      fireEvent.click(
+        await screen.findByRole("button", {
+          name: "唐揚げのステータスを進める",
+        }),
+      );
+      fireEvent.click(screen.getByTestId("register-status-confirm-confirm"));
+
+      expect(await screen.findByTestId("register-update-status-error")).toHaveTextContent(
+        "ステータスの更新に失敗しました",
+      );
+      expect(
+        screen.getByTestId("register-table-detail-item-status"),
+      ).toHaveTextContent("未対応");
+    });
+
+    it("ステータス変更成功より前に開始した背景ポーリングが、成功のマージより後に解決しても、マージ結果を巻き戻さない（mutationSeqRefガード、7.6/8.2/8.3と同型の回帰テスト）", async () => {
+      vi.useFakeTimers();
+      const item = makeBillingItem({
+        name: "唐揚げ",
+        genre: "food",
+        status: "received",
+      });
+      const occupied = makeTable({
+        tableLabel: "T1",
+        activeSession: {
+          id: "session-1",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          partySize: 2,
+        },
+        items: [item],
+        total: item.unitPrice,
+      });
+      mockListRegisterFeed.mockResolvedValueOnce({ ok: true, value: [occupied] });
+
+      render(<FloorMap storeId="store-1" />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      fireEvent.click(screen.getByTestId("register-floor-tile-T1"));
+
+      // 背景ポーリングが発火し、解決を意図的に保留する（ステータス変更前の
+      // 古いスナップショット: statusが"received"のまま）。
+      let resolveStalePoll!: (value: {
+        ok: true;
+        value: TableBillingSummary[];
+      }) => void;
+      const stalePoll = new Promise<{ ok: true; value: TableBillingSummary[] }>(
+        (resolve) => {
+          resolveStalePoll = resolve;
+        },
+      );
+      mockListRegisterFeed.mockReturnValueOnce(stalePoll);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(REGISTER_FLOOR_MAP_POLL_INTERVAL_MS);
+      });
+      expect(mockListRegisterFeed).toHaveBeenCalledTimes(2);
+
+      // このポーリングが解決するより前に、ステータス変更が完了し即座に
+      // マージされる。
+      mockUpdateOrderItemStatus.mockResolvedValueOnce({
+        ok: true,
+        value: {
+          id: item.id,
+          menuItemId: item.menuItemId,
+          name: item.name,
+          unitPrice: item.unitPrice,
+          quantity: item.quantity,
+          optionsSummary: null,
+          status: "in_progress",
+          statusUpdatedAt: "2026-01-01T00:00:01.000Z",
+        },
+      });
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "唐揚げのステータスを進める" }),
+      );
+      await act(async () => {
+        fireEvent.click(screen.getByTestId("register-status-confirm-confirm"));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(
+        screen.getByTestId("register-table-detail-item-status"),
+      ).toHaveTextContent("調理中");
+
+      // 保留していた古いポーリング応答（変更前のreceivedのまま）が今になって
+      // 解決する。
+      await act(async () => {
+        resolveStalePoll({ ok: true, value: [occupied] });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // マージ結果（調理中）が古いスナップショットに巻き戻らないこと。
+      expect(
+        screen.getByTestId("register-table-detail-item-status"),
+      ).toHaveTextContent("調理中");
     });
   });
 });

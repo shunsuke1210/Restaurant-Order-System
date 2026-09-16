@@ -6,6 +6,8 @@ import type {
   MenuItemListing,
   TableBillingSummary,
 } from "@/lib/gateways/staffOperationsGateway";
+import type { OrderItemStatus } from "@/lib/gateways/customerOrderingGateway";
+import { resolveNextOrderItemStatus } from "@/lib/orderItemStatusTransitions";
 import { elapsedMinutes, formatYen } from "./FloorMap";
 import ConfirmDialog from "./ConfirmDialog";
 import OptionSelectionPanel, {
@@ -18,7 +20,7 @@ import OptionSelectionPanel, {
  * FloorMap.tsx（タスク8.1）がタイル選択中（`selectedTableId`が非null）に
  * 表示するオーバーレイモーダル。
  *
- * Requirements: 3.1, 3.2, 3.4, 5.1, 5.2, 5.3, 5.5, 5.6
+ * Requirements: 3.1, 3.2, 3.4, 5.1, 5.2, 5.3, 5.5, 5.6, 5.7
  * Design: .kiro/specs/table-order-kitchen/design.md「RegisterConsole」
  *   （「タイルを選択すると卓の詳細...を操作するパネルを開く。入店操作は
  *   人数の入力を伴い（要件3.1, 3.4）」「品目の追加・削除...はいずれも
@@ -102,18 +104,36 @@ import OptionSelectionPanel, {
  * 閉じるのみ（タスクの観測可能な完了条件そのもの。「はい」相当の
  * 「削除する」を確認してから初めて`onRemoveItem(orderItemId)`を呼び出す。
  *
- * ## `status`を表示しない理由（意図的な部分対応、8.2からの既知の乖離の一部解消）
- * `list_register_feed`（0012_list_register_feed_item_id.sqlでタスク8.3が
- * 拡張）は各明細に`optionsSummary`/`status`を追加したが、本コンポーネントは
- * `optionsSummary`のみ表示し`status`は表示しない。mock-preview.htmlの
- * `statusLabel(genre, status)`はジャンルに応じたラベル変換
+ * ## ステータス表示・変更UI（タスク8.4、要件5.7）
+ * 8.3時点では`list_register_feed`の`items`がジャンル情報を持たず
+ * `status`をジャンルに応じて正しくラベル変換できなかったため、
+ * `status`の値は取得するのみで画面には表示していなかった（0012冒頭
+ * コメント参照）。本タスクで`list_register_feed`に`genre`を追加した
+ * （`0014_list_register_feed_item_genre.sql`）ことで、mock-preview.htmlの
+ * `statusLabel(genre, status)`と同じジャンルに応じた日本語ラベル変換
  * （ドリンクは「未対応」「対応済み」の2値、フード/一品は「未対応」
- * 「調理中」「調理完了」の3値）を要求するが、`TableBillingSummary.items`は
- * ジャンル情報を持たないため、ジャンルを無視して`status`をそのまま表示すると
- * ドリンクにも「調理中」があるかのような誤った表示になりかねない。よって
- * `status`は8.4（品目ステータス変更UI）が必要に応じてジャンルも含めて
- * このRPCを再拡張する際の判断に委ね、本タスクでは値を取得するに留め
- * 画面には表示しない（0012冒頭コメント参照）。
+ * 「調理中」「調理完了」の3値）を各明細に表示できるようになった
+ * （`orderItemStatusLabel`関数、本タスクの観測可能な完了条件そのもの:
+ * 「注文明細のステータス表示が更新される」の前提となる表示）。
+ *
+ * 次ステータスが存在する品目（`done`以外）には、単一の「進める」ボタンを
+ * 表示する（mock-preview.htmlのレジ側`tableDetailHtml`が検証済みの、
+ * KitchenBoardより単純な1ボタン/1品目デザインを踏襲——一品の未対応→
+ * 調理完了直接ショートカットはKitchenBoard専用の速度優先UXであり、
+ * RegisterConsoleは意図的に持たない。design.decision C相当の判断、
+ * `src/lib/orderItemStatusTransitions.ts`冒頭コメント「対象範囲」参照）。
+ * 次ステータスの判定は`resolveNextOrderItemStatus`
+ * （`src/lib/orderItemStatusTransitions.ts`、KitchenBoardの
+ * `OrderItemStatusActions.tsx`と共有）を用いる——`update_order_item_status`
+ * の許可遷移表と1:1対応させる必要があるロジックをKitchenBoard/
+ * RegisterConsoleの2箇所へ複製するとドリフトのリスクがあるため
+ * （tasks.md 7.5/8.4 Implementation Notes参照）。
+ *
+ * 「進める」タップ→`ConfirmDialog`（要件5.7「実行前に確認を求め」、
+ * 品目追加・削除（8.3）と同型の確認フロー）→確認すると
+ * `onUpdateItemStatus(orderItemId, nextStatus)`を呼び出す。「いいえ」は
+ * 呼び出さずモーダルを閉じるのみ（削除確認（8.3）と対称的な完了条件、
+ * tasks.md「Design decisions A」参照）。
  */
 
 type TableDetailPanelProps = {
@@ -133,6 +153,12 @@ type TableDetailPanelProps = {
   addItemErrorMessage: string | null;
   onRemoveItem: (orderItemId: string) => Promise<void>;
   removeItemErrorMessage: string | null;
+  // タスク8.4で追加。
+  onUpdateItemStatus: (
+    orderItemId: string,
+    status: OrderItemStatus,
+  ) => Promise<void>;
+  updateStatusErrorMessage: string | null;
 };
 
 // 要件3.1「人数の入力を求め」に対応する下書きの初期値・下限。上限は要件が
@@ -181,6 +207,33 @@ function itemDisplayLabel(item: TableBillingSummary["items"][number]): string {
     : item.name;
 }
 
+// タスク8.4で追加。mock-preview.htmlの`statusLabel(genre, status)`
+// （~line 732）と同じジャンルに応じた日本語ラベル対応表（ファイル冒頭
+// コメント「ステータス表示・変更UI」参照）。フード/一品は3値、ドリンクは
+// 2値のみを取りうる。
+const FOOD_GENRE_STATUS_LABELS: Record<OrderItemStatus, string> = {
+  received: "未対応",
+  in_progress: "調理中",
+  done: "調理完了",
+};
+const DRINK_STATUS_LABELS: Partial<Record<OrderItemStatus, string>> = {
+  received: "未対応",
+  done: "対応済み",
+};
+
+/** ジャンルに応じた品目ステータスの日本語表示。 */
+function orderItemStatusLabel(
+  genre: MenuItemGenre,
+  status: OrderItemStatus,
+): string {
+  if (genre === "drink") {
+    // ドリンクのin_progressは構造上到達しないが、防御的にstatusそのものを
+    // フォールバック表示する（DrinkBoard.tsx冒頭コメントと同じ前提）。
+    return DRINK_STATUS_LABELS[status] ?? status;
+  }
+  return FOOD_GENRE_STATUS_LABELS[status];
+}
+
 export default function TableDetailPanel({
   table,
   onClose,
@@ -193,6 +246,8 @@ export default function TableDetailPanel({
   addItemErrorMessage,
   onRemoveItem,
   removeItemErrorMessage,
+  onUpdateItemStatus,
+  updateStatusErrorMessage,
 }: TableDetailPanelProps) {
   const [startingSession, setStartingSession] = useState(false);
   const [partySizeDraft, setPartySizeDraft] = useState(DEFAULT_PARTY_SIZE);
@@ -257,6 +312,8 @@ export default function TableDetailPanel({
             addItemErrorMessage={addItemErrorMessage}
             onRemoveItem={onRemoveItem}
             removeItemErrorMessage={removeItemErrorMessage}
+            onUpdateItemStatus={onUpdateItemStatus}
+            updateStatusErrorMessage={updateStatusErrorMessage}
           />
         )}
       </div>
@@ -379,15 +436,27 @@ type OccupiedViewProps = {
   addItemErrorMessage: string | null;
   onRemoveItem: (orderItemId: string) => Promise<void>;
   removeItemErrorMessage: string | null;
+  // タスク8.4で追加。
+  onUpdateItemStatus: (
+    orderItemId: string,
+    status: OrderItemStatus,
+  ) => Promise<void>;
+  updateStatusErrorMessage: string | null;
 };
 
 type PendingSimpleAdd = { menuItemId: string; name: string };
 type PendingRemoval = { orderItemId: string; label: string };
+// タスク8.4で追加。
+type PendingStatusChange = {
+  orderItemId: string;
+  label: string;
+  nextStatus: OrderItemStatus;
+  nextStatusLabel: string;
+};
 
 /**
- * 来店中のビュー（要件5.1, 5.5, 5.6）。品目の追加・削除を扱う
- * （ステータス変更・会計・呼び出し対応は8.4/8.5/8.6のスコープのため
- * 引き続き対象外）。
+ * 来店中のビュー（要件5.1, 5.5, 5.6, 5.7）。品目の追加・削除・ステータス
+ * 変更を扱う（会計・呼び出し対応は8.5/8.6のスコープのため引き続き対象外）。
  */
 function OccupiedView({
   table,
@@ -398,6 +467,8 @@ function OccupiedView({
   addItemErrorMessage,
   onRemoveItem,
   removeItemErrorMessage,
+  onUpdateItemStatus,
+  updateStatusErrorMessage,
 }: OccupiedViewProps) {
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [optionItem, setOptionItem] = useState<MenuItemListing | null>(null);
@@ -408,6 +479,10 @@ function OccupiedView({
     null,
   );
   const [removeSubmitting, setRemoveSubmitting] = useState(false);
+  // タスク8.4で追加。
+  const [pendingStatusChange, setPendingStatusChange] =
+    useState<PendingStatusChange | null>(null);
+  const [statusChangeSubmitting, setStatusChangeSubmitting] = useState(false);
 
   function requestAddItem(item: MenuItemListing) {
     // 売り切れの品目は「＋」ボタン自体がdisabledのため通常到達しないが、
@@ -467,6 +542,35 @@ function OccupiedView({
     setPendingRemoval(null);
   }
 
+  // タスク8.4で追加（要件5.7）。「進める」ボタンは次ステータスが存在する
+  // 品目にのみ描画される（ファイル冒頭コメント「ステータス表示・変更UI」
+  // 参照）ため、ここでのnextStatus===nullは通常到達しない防御的分岐。
+  function requestStatusChange(item: TableBillingSummary["items"][number]) {
+    const nextStatus = resolveNextOrderItemStatus(item.genre, item.status);
+    if (!nextStatus) {
+      return;
+    }
+    setPendingStatusChange({
+      orderItemId: item.id,
+      label: itemDisplayLabel(item),
+      nextStatus,
+      nextStatusLabel: orderItemStatusLabel(item.genre, nextStatus),
+    });
+  }
+
+  async function confirmPendingStatusChange() {
+    if (!pendingStatusChange) {
+      return;
+    }
+    setStatusChangeSubmitting(true);
+    await onUpdateItemStatus(
+      pendingStatusChange.orderItemId,
+      pendingStatusChange.nextStatus,
+    );
+    setStatusChangeSubmitting(false);
+    setPendingStatusChange(null);
+  }
+
   const genreGroups = groupMenuItemsByGenre(menuItems);
 
   return (
@@ -499,31 +603,58 @@ function OccupiedView({
             まだ注文はありません
           </p>
         ) : (
-          table.items.map((item) => (
-            <div
-              key={item.id}
-              data-testid="register-table-detail-item"
-              className="flex items-center justify-between gap-2 border-b border-neutral-100 px-3 py-2 text-sm last:border-b-0"
-            >
-              <span className="text-neutral-800">
-                {itemDisplayLabel(item)} ×{item.quantity}
-              </span>
-              <div className="flex shrink-0 items-center gap-2">
-                <span className="font-mono font-semibold text-neutral-900">
-                  {formatYen(item.unitPrice * item.quantity)}
-                </span>
-                <button
-                  type="button"
-                  data-testid="register-table-detail-item-remove"
-                  aria-label={`${item.name}を削除`}
-                  onClick={() => requestRemoveItem(item)}
-                  className="rounded px-2 py-1 text-xs font-semibold text-neutral-500"
-                >
-                  削除
-                </button>
+          table.items.map((item) => {
+            const nextStatus = resolveNextOrderItemStatus(
+              item.genre,
+              item.status,
+            );
+            return (
+              <div
+                key={item.id}
+                data-testid="register-table-detail-item"
+                className="flex flex-col gap-1 border-b border-neutral-100 px-3 py-2 text-sm last:border-b-0"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-neutral-800">
+                    {itemDisplayLabel(item)} ×{item.quantity}
+                  </span>
+                  <span
+                    data-testid="register-table-detail-item-status"
+                    className="shrink-0 text-xs font-semibold text-neutral-500"
+                  >
+                    {orderItemStatusLabel(item.genre, item.status)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono font-semibold text-neutral-900">
+                    {formatYen(item.unitPrice * item.quantity)}
+                  </span>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {nextStatus ? (
+                      <button
+                        type="button"
+                        data-testid="register-table-detail-item-advance"
+                        aria-label={`${item.name}のステータスを進める`}
+                        onClick={() => requestStatusChange(item)}
+                        className="rounded px-2 py-1 text-xs font-semibold text-neutral-700"
+                      >
+                        進める
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      data-testid="register-table-detail-item-remove"
+                      aria-label={`${item.name}を削除`}
+                      onClick={() => requestRemoveItem(item)}
+                      className="rounded px-2 py-1 text-xs font-semibold text-neutral-500"
+                    >
+                      削除
+                    </button>
+                  </div>
+                </div>
               </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
 
@@ -534,6 +665,16 @@ function OccupiedView({
           className="text-sm text-red-600"
         >
           {removeItemErrorMessage}
+        </p>
+      ) : null}
+
+      {updateStatusErrorMessage ? (
+        <p
+          role="alert"
+          data-testid="register-update-status-error"
+          className="text-sm text-red-600"
+        >
+          {updateStatusErrorMessage}
         </p>
       ) : null}
 
@@ -635,6 +776,18 @@ function OccupiedView({
           submitting={addSubmitting}
           onCancel={() => setPendingSimpleAdd(null)}
           onConfirm={() => void confirmSimpleAdd()}
+        />
+      ) : null}
+
+      {pendingStatusChange ? (
+        <ConfirmDialog
+          testId="register-status-confirm"
+          ariaLabel="品目ステータス変更の確認"
+          message={`「${pendingStatusChange.label}」のステータスを「${pendingStatusChange.nextStatusLabel}」に更新しますか？`}
+          confirmLabel="進める"
+          submitting={statusChangeSubmitting}
+          onCancel={() => setPendingStatusChange(null)}
+          onConfirm={() => void confirmPendingStatusChange()}
         />
       ) : null}
 

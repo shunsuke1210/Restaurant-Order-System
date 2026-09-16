@@ -49,6 +49,8 @@ function makeBillingItem(
     unitPrice: 100,
     optionsSummary: null,
     status: "received",
+    // タスク8.4で追加（0014_list_register_feed_item_genre.sql）。
+    genre: "food",
     ...overrides,
   };
 }
@@ -84,6 +86,8 @@ function renderPanel(overrides: Partial<PanelProps> = {}) {
     addItemErrorMessage: null,
     onRemoveItem: vi.fn().mockResolvedValue(undefined),
     removeItemErrorMessage: null,
+    onUpdateItemStatus: vi.fn().mockResolvedValue(undefined),
+    updateStatusErrorMessage: null,
     ...overrides,
   };
   render(<TableDetailPanel {...props} />);
@@ -242,8 +246,16 @@ describe("TableDetailPanel", () => {
             quantity: 2,
             unitPrice: 500,
             optionsSummary: "わさび抜き",
+            genre: "food",
+            status: "done",
           }),
-          makeBillingItem({ name: "ビール", quantity: 1, unitPrice: 600 }),
+          makeBillingItem({
+            name: "ビール",
+            quantity: 1,
+            unitPrice: 600,
+            genre: "drink",
+            status: "done",
+          }),
         ],
         // items単純合計（500*2+600=1600）とは意図的に異なる値。
         total: 9999,
@@ -262,7 +274,9 @@ describe("TableDetailPanel", () => {
       expect(
         screen.getByTestId("register-table-detail-total"),
       ).toHaveTextContent("¥9,999");
-      // ステータス変更ボタンは8.4のスコープであり本タスクでは一切表示しない。
+      // 両品目ともdone状態のため、進めるボタンはいずれも表示されない
+      // （タスク8.4の完全なボタン表示可否テーブルはdescribe
+      // 「品目のステータス変更」で網羅する）。
       expect(screen.queryByRole("button", { name: "進める" })).not.toBeInTheDocument();
     });
 
@@ -655,6 +669,203 @@ describe("TableDetailPanel", () => {
       expect(screen.getByTestId("register-add-menu-list")).toHaveTextContent(
         "取得に失敗",
       );
+    });
+  });
+
+  // タスク8.4: 品目ステータス変更UI（確認モーダル）。
+  // Requirements: 5.7
+  describe("品目のステータス変更（タスク8.4、要件5.7）", () => {
+    function occupiedTableWithItem(
+      itemOverrides: Partial<TableBillingSummary["items"][number]> = {},
+    ) {
+      const item = makeBillingItem({
+        name: "唐揚げ",
+        genre: "food",
+        status: "received",
+        ...itemOverrides,
+      });
+      return {
+        item,
+        table: makeTable({
+          activeSession: {
+            id: "s1",
+            startedAt: "2026-01-01T00:00:00.000Z",
+            partySize: 2,
+          },
+          items: [item],
+          total: item.unitPrice * item.quantity,
+        }),
+      };
+    }
+
+    // ジャンル×現在ステータス→ステータス表示ラベル・進めるボタン表示可否の
+    // 全数テーブル（tasks.md「Testing requirements」が要求する網羅テスト）。
+    // mock-preview.htmlのstatusLabel(genre, status)と一致させる。
+    const STATUS_DISPLAY_TABLE: ReadonlyArray<{
+      genre: "food" | "ippin" | "drink";
+      status: "received" | "in_progress" | "done";
+      label: string;
+      hasAdvanceButton: boolean;
+    }> = [
+      { genre: "food", status: "received", label: "未対応", hasAdvanceButton: true },
+      { genre: "food", status: "in_progress", label: "調理中", hasAdvanceButton: true },
+      { genre: "food", status: "done", label: "調理完了", hasAdvanceButton: false },
+      { genre: "ippin", status: "received", label: "未対応", hasAdvanceButton: true },
+      { genre: "ippin", status: "in_progress", label: "調理中", hasAdvanceButton: true },
+      { genre: "ippin", status: "done", label: "調理完了", hasAdvanceButton: false },
+      { genre: "drink", status: "received", label: "未対応", hasAdvanceButton: true },
+      { genre: "drink", status: "done", label: "対応済み", hasAdvanceButton: false },
+    ];
+
+    it.each(STATUS_DISPLAY_TABLE)(
+      "genre=$genre, status=$status のとき、ステータス表示は「$label」、進めるボタンの表示は$hasAdvanceButton",
+      ({ genre, status, label, hasAdvanceButton }) => {
+        const { table } = occupiedTableWithItem({ genre, status });
+        renderPanel({ table });
+
+        expect(
+          screen.getByTestId("register-table-detail-item-status"),
+        ).toHaveTextContent(label);
+        if (hasAdvanceButton) {
+          expect(
+            screen.getByTestId("register-table-detail-item-advance"),
+          ).toBeInTheDocument();
+        } else {
+          expect(
+            screen.queryByTestId("register-table-detail-item-advance"),
+          ).not.toBeInTheDocument();
+        }
+      },
+    );
+
+    it("「進める」を押すと確認モーダルが対象品目名と次ステータスラベルを表示する", () => {
+      const { table } = occupiedTableWithItem({
+        genre: "food",
+        status: "received",
+      });
+      renderPanel({ table });
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "唐揚げのステータスを進める" }),
+      );
+
+      const modal = screen.getByTestId("register-status-confirm");
+      expect(modal).toHaveTextContent("唐揚げ");
+      expect(modal).toHaveTextContent("調理中");
+    });
+
+    it("確認モーダルの「いいえ」を選ぶと、onUpdateItemStatusが呼ばれず、ステータス表示（画面表示・propsのtable）も変化しない（本タスクの完了条件の裏面、要件5.7と対称）", () => {
+      const { table, item } = occupiedTableWithItem({
+        genre: "food",
+        status: "received",
+      });
+      const onUpdateItemStatus = vi.fn().mockResolvedValue(undefined);
+      renderPanel({ table, onUpdateItemStatus });
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "唐揚げのステータスを進める" }),
+      );
+      fireEvent.click(screen.getByTestId("register-status-confirm-cancel"));
+
+      expect(onUpdateItemStatus).not.toHaveBeenCalled();
+      expect(
+        screen.queryByTestId("register-status-confirm"),
+      ).not.toBeInTheDocument();
+      // 画面表示: ステータス表示は変わらず「未対応」のまま。
+      expect(
+        screen.getByTestId("register-table-detail-item-status"),
+      ).toHaveTextContent("未対応");
+      // 元のtableオブジェクト自体（親から渡されたデータ）も不変。
+      expect(table.items).toEqual([item]);
+    });
+
+    it("確認モーダルで確認すると、onUpdateItemStatusを対象のorderItemIdと次ステータスで呼び出す（本タスクの観測可能な完了条件の呼び出し側検証）", async () => {
+      const { table, item } = occupiedTableWithItem({
+        genre: "food",
+        status: "received",
+      });
+      const onUpdateItemStatus = vi.fn().mockResolvedValue(undefined);
+      renderPanel({ table, onUpdateItemStatus });
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "唐揚げのステータスを進める" }),
+      );
+      fireEvent.click(screen.getByTestId("register-status-confirm-confirm"));
+
+      expect(onUpdateItemStatus).toHaveBeenCalledTimes(1);
+      expect(onUpdateItemStatus).toHaveBeenCalledWith(item.id, "in_progress");
+    });
+
+    it("ドリンク品目の「進める」確認は次ステータスdoneをonUpdateItemStatusへ渡す（in_progressを経由しない、要件6.4相当の境界）", () => {
+      const { item } = occupiedTableWithItem({
+        genre: "drink",
+        status: "received",
+        name: "レモンサワー",
+      });
+      const table = makeTable({
+        activeSession: {
+          id: "s1",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          partySize: 2,
+        },
+        items: [item],
+        total: item.unitPrice,
+      });
+      const onUpdateItemStatus = vi.fn().mockResolvedValue(undefined);
+      renderPanel({ table, onUpdateItemStatus });
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "レモンサワーのステータスを進める" }),
+      );
+      fireEvent.click(screen.getByTestId("register-status-confirm-confirm"));
+
+      expect(onUpdateItemStatus).toHaveBeenCalledWith(item.id, "done");
+    });
+
+    it("ステータス変更確定中はモーダルのボタンが無効化され、応答が返ると閉じる", async () => {
+      const { table } = occupiedTableWithItem({
+        genre: "food",
+        status: "received",
+      });
+      let resolveUpdate!: () => void;
+      const onUpdateItemStatus = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveUpdate = resolve;
+          }),
+      );
+      renderPanel({ table, onUpdateItemStatus });
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "唐揚げのステータスを進める" }),
+      );
+      fireEvent.click(screen.getByTestId("register-status-confirm-confirm"));
+
+      expect(
+        screen.getByTestId("register-status-confirm-confirm"),
+      ).toBeDisabled();
+      expect(
+        screen.getByTestId("register-status-confirm-cancel"),
+      ).toBeDisabled();
+
+      resolveUpdate();
+      await screen.findByTestId("register-table-detail-panel");
+      expect(
+        screen.queryByTestId("register-status-confirm"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("updateStatusErrorMessageが指定されると警告として表示する（INVALID_TRANSITION等の汎用メッセージ）", () => {
+      const { table } = occupiedTableWithItem();
+      renderPanel({
+        table,
+        updateStatusErrorMessage:
+          "ステータスの更新に失敗しました。もう一度お試しください。",
+      });
+
+      expect(
+        screen.getByTestId("register-update-status-error"),
+      ).toHaveTextContent("ステータスの更新に失敗しました");
     });
   });
 

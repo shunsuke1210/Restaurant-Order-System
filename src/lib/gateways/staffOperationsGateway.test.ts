@@ -767,7 +767,7 @@ describe("createStaffOperationsGateway", () => {
   });
 
   describe("listRegisterFeed", () => {
-    it("list_register_feedをp_store_idで呼び出し、成功応答を配列へ整形する（activeSessionがnullの卓を含む、各明細のid/optionsSummary/statusを含む。タスク8.3）", async () => {
+    it("list_register_feedをp_store_idで呼び出し、成功応答を配列へ整形する（activeSessionがnullの卓を含む、各明細のid/optionsSummary/status/genreを含む。タスク8.3/8.4）", async () => {
       rpc.mockResolvedValueOnce({
         data: [
           {
@@ -787,6 +787,7 @@ describe("createStaffOperationsGateway", () => {
                 unitPrice: 500,
                 optionsSummary: "わさび抜き",
                 status: "received",
+                genre: "food",
               },
             ],
             total: 1000,
@@ -829,6 +830,7 @@ describe("createStaffOperationsGateway", () => {
             unitPrice: 500,
             optionsSummary: "わさび抜き",
             status: "received",
+            genre: "food",
           },
         ],
         total: 1000,

@@ -1,4 +1,6 @@
 import type { OrderItemStatus } from "@/lib/gateways/customerOrderingGateway";
+import type { MenuItemGenre } from "@/lib/gateways/staffOperationsGateway";
+import { resolveNextOrderItemStatus } from "@/lib/orderItemStatusTransitions";
 import type { KitchenFeedItem } from "./FoodBoard";
 
 /**
@@ -30,6 +32,20 @@ import type { KitchenFeedItem } from "./FoodBoard";
  * （`shortcut`）を並べる。`done`状態およびドリンクの`in_progress`
  * （構造上到達しない、DrinkBoard.tsx冒頭コメント参照）では空配列を返し、
  * 呼び出し側は何も描画しない。
+ *
+ * ## `resolveNextOrderItemStatus`との共有について（タスク8.4で改修）
+ * `advance`ボタンの次ステータス（「1段階分の遷移」）は、
+ * `src/lib/orderItemStatusTransitions.ts`の`resolveNextOrderItemStatus`
+ * （RegisterConsole/TableDetailPanel.tsx、タスク8.4で新規追加）を呼び出す
+ * ことで判定する。以前は本ファイルへローカルにインライン実装していたが、
+ * `update_order_item_status`（0004_rpc_staff_gateway.sql）の許可遷移表と
+ * 1:1対応させる必要があるロジックをKitchenBoard/RegisterConsoleの2箇所へ
+ * 複製するとドリフトのリスクがある（tasks.md 7.5/8.4 Implementation Notes
+ * 参照）ため、共有関数へ抽出した。一品の直接ショートカット（`shortcut`）は
+ * KitchenBoard専用の速度優先UXであり共有関数の責務には含めないため、本
+ * ファイルに引き続きローカルで実装する（`resolveNextOrderItemStatus`
+ * 冒頭コメント「対象範囲」参照）。この改修による出力の変化は無い
+ * （FoodBoard.test.tsx/DrinkBoard.test.tsxで無回帰を確認済み）。
  */
 
 type OrderItemStatusActionsProps = {
@@ -44,35 +60,39 @@ type Action = {
   nextStatus: OrderItemStatus;
 };
 
+/** ジャンル・現在ステータスに応じた`advance`ボタンの文言。 */
+function advanceLabel(genre: MenuItemGenre, status: OrderItemStatus): string {
+  if (genre === "drink") {
+    return "対応完了";
+  }
+  return status === "received" ? "調理開始" : "調理完了";
+}
+
 function resolveActions(item: KitchenFeedItem): ReadonlyArray<Action> {
-  if (item.status === "done") {
+  const nextStatus = resolveNextOrderItemStatus(item.genre, item.status);
+  if (nextStatus === null) {
+    // done状態、またはドリンクのin_progress（構造上到達しない、
+    // DrinkBoard.tsx冒頭コメント「列構成について」参照）。
     return [];
   }
 
-  if (item.genre === "drink") {
-    if (item.status !== "received") {
-      // ドリンク品目のstatusはreceived/doneの2値しか実際には取り得ない
-      // （DrinkBoard.tsx冒頭コメント「列構成について」参照）ための防御的分岐。
-      return [];
-    }
-    return [{ key: "advance", label: "対応完了", nextStatus: "done" }];
+  const actions: Action[] = [
+    {
+      key: "advance",
+      label: advanceLabel(item.genre, item.status),
+      nextStatus,
+    },
+  ];
+
+  if (item.genre === "ippin" && item.status === "received") {
+    // 要件6.6: 一品ジャンルは未対応→調理完了への直接遷移を、通常の
+    // 段階的操作に加えて提供する（`resolveNextOrderItemStatus`の責務には
+    // 含まれないKitchenBoard専用のショートカット、ファイル冒頭コメント
+    // 参照）。
+    actions.push({ key: "shortcut", label: "直接完了", nextStatus: "done" });
   }
 
-  // food または ippin ジャンル。
-  if (item.status === "received") {
-    const actions: Action[] = [
-      { key: "advance", label: "調理開始", nextStatus: "in_progress" },
-    ];
-    if (item.genre === "ippin") {
-      // 要件6.6: 一品ジャンルは未対応→調理完了への直接遷移を、通常の
-      // 段階的操作に加えて提供する。
-      actions.push({ key: "shortcut", label: "直接完了", nextStatus: "done" });
-    }
-    return actions;
-  }
-
-  // in_progress → done（フード/一品共通）。
-  return [{ key: "advance", label: "調理完了", nextStatus: "done" }];
+  return actions;
 }
 
 const ADVANCE_BUTTON_CLASS =

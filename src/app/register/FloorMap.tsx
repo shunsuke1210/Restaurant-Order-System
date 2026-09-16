@@ -11,6 +11,7 @@ import type { OrderItemSummary } from "@/lib/gateways/customerOrderingGateway";
 import { useCheckIn } from "./useCheckIn";
 import { useAddOrderItem } from "./useAddOrderItem";
 import { useRemoveOrderItem } from "./useRemoveOrderItem";
+import { useUpdateOrderItemStatus } from "./useUpdateOrderItemStatus";
 import TableDetailPanel from "./TableDetailPanel";
 
 /**
@@ -179,6 +180,36 @@ import TableDetailPanel from "./TableDetailPanel";
  * 真の値で自然に上書きするため、クライアント側の再計算が将来サーバー側の
  * 計算式と乖離しても実害は次回ポーリングまでに限定される。
  *
+ * ## タスク8.4での更新: 品目ステータス変更UI（確認モーダル）
+ * 8.2/8.3が確立した「実際のRPC呼び出し・ローカル状態へのマージはFloorMap側
+ * （フック）が担い、TableDetailPanel.tsxは確認モーダル等のUI状態のみを
+ * 持つ純粋なプレゼンテーションに徹する」という役割分担を、
+ * `updateOrderItemStatus`にもそのまま適用する（`useUpdateOrderItemStatus`、
+ * `useAddOrderItem`/`useRemoveOrderItem`と同型の小さな共有フック。
+ * `useUpdateOrderItemStatus.ts`冒頭コメント「`useAdvanceOrderItemStatus.ts`
+ * を再利用しない理由」参照——KitchenBoard版は確認モーダル無し前提のため
+ * 契約が異なる）。
+ *
+ * ### `mutationSeqRef`の適用（4つ目のローカルマージ経路、8.2/8.3と同型）
+ * ステータス変更成功時のローカルマージ（`mergeUpdatedItemStatus`）も、
+ * 既存の5秒背景ポーリング・check-in・品目追加・品目削除と同一コンポーネント
+ * 内で共存するため、同じ`mutationSeqRef`（インクリメント）＋`load()`内の
+ * フェッチ開始時点の値の記録・解決時の不一致検出という競合防止をそのまま
+ * 適用する（tasks.md 7.6/8.2 Implementation Notesが「新しい局所的マージ
+ * 経路はいずれも同じ競合にさらされるため、必ず同じガードを適用すること」と
+ * 予告していた通り）。回帰テストは`FloorMap.test.tsx`に「ステータス変更
+ * 成功より前に開始した背景ポーリングが...」を追加した（8.2/8.3の回帰
+ * テストと同型）。
+ *
+ * ### 次ステータスの判定について
+ * `resolveNextOrderItemStatus`（`src/lib/orderItemStatusTransitions.ts`、
+ * KitchenBoardの`OrderItemStatusActions.tsx`と共有）を`TableDetailPanel.tsx`
+ * 側で呼び出し、「進める」ボタンが送信する`status`を決定する
+ * （design.mdのStaffOperationsGateway Responsibilities & Constraints
+ * 「updateOrderItemStatus（レジ起点）」参照）。本ファイル（FloorMap.tsx）は
+ * その決定済みの`status`を受け取って`updateOrderItemStatus`を呼ぶのみで、
+ * 遷移判定ロジック自体は持たない。
+ *
  * ### 品目一覧（`listMenuItems`）の取得方法
  * 品目追加リストは選択中の卓に依存しない店舗全体のデータのため、
  * `selectedTableId`とは独立した別のuseEffectでマウント時取得＋
@@ -273,6 +304,17 @@ export default function FloorMap({ storeId }: FloorMapProps) {
   const [state, setState] = useState<BoardState>({ status: "loading" });
   const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
 
+  // タスク8.3で追加: 品目追加リストは選択中の卓に依存しない店舗全体の
+  // データのため、`state.tables`とは独立したstateとして持つ（ファイル
+  // 冒頭コメント「品目一覧の取得方法」参照）。タスク8.4で`mergeAddedItem`が
+  // 参照するため（後述、ファイル冒頭コメント「タスク8.4での更新」）、
+  // `mergeAddedItem`より前に宣言する。
+  const [menuItemsState, setMenuItemsState] = useState<
+    | { status: "loading" }
+    | { status: "error" }
+    | { status: "ready"; items: ReadonlyArray<MenuItemListing> }
+  >({ status: "loading" });
+
   // タスク8.2で追加: ファイル冒頭コメント「タスク8.2での更新」参照。
   // startSession成功時のローカルマージのたびにインクリメントする単調増加
   // カウンタ。tasks.md 7.6 Implementation Notesの設計をそのまま踏襲する。
@@ -318,8 +360,28 @@ export default function FloorMap({ storeId }: FloorMapProps) {
    * `unitPrice*quantity`分だけ加算する（ファイル冒頭コメント「合計金額の
    * 再計算方法」参照）。`mutationSeqRef`のインクリメントは8.2の
    * `mergeStartedSession`と同型のガード。
+   *
+   * タスク8.4で追加: `TableBillingSummary.items`が`genre`を持つように
+   * なった（`0014_list_register_feed_item_genre.sql`）が、
+   * `addOrderItem`が返す`OrderItemSummary`自体はgenreを含まない（客側の
+   * `submitOrder`等とも共有する型であり、本タスクのために拡張すると
+   * 影響範囲が本タスクのBoundary（RegisterConsole）を大きく超えるため
+   * 見送った）。そのため、既に取得済みの`menuItemsState`（品目追加リスト用、
+   * 同一コンポーネント内に既存）から`item.menuItemId`に一致する
+   * `MenuItemListing.genre`を引く。追加操作は`menuItemsState`から選んだ
+   * 品目に対してのみ行われるため通常は必ず見つかるが、万一見つからない
+   * 場合は暫定的に`"food"`にフォールバックする（ローカルマージは
+   * ベストエフォートであり、次回の背景ポーリングが`list_register_feed`の
+   * 権威的な`genre`で必ず補正するため実害は次回ポーリングまでに限定される
+   * ——8.2/8.3が確立した「ドキュメント化された業務エラー時はローカル状態を
+   * 次回ポーリングに委ねる」という既存方針と同じ考え方）。
    */
   function mergeAddedItem(tableId: string, item: OrderItemSummary) {
+    const genre =
+      menuItemsState.status === "ready"
+        ? (menuItemsState.items.find((m) => m.id === item.menuItemId)
+            ?.genre ?? "food")
+        : "food";
     mutationSeqRef.current += 1;
     setState((prev) =>
       prev.status === "ready"
@@ -339,6 +401,7 @@ export default function FloorMap({ storeId }: FloorMapProps) {
                         unitPrice: item.unitPrice,
                         optionsSummary: item.optionsSummary,
                         status: item.status,
+                        genre,
                       },
                     ],
                     total: table.total + item.unitPrice * item.quantity,
@@ -391,14 +454,45 @@ export default function FloorMap({ storeId }: FloorMapProps) {
   const { removeItem, removeItemError, clearRemoveItemError } =
     useRemoveOrderItem(gateway, mergeRemovedItem);
 
-  // タスク8.3で追加: 品目追加リストは選択中の卓に依存しない店舗全体の
-  // データのため、`state.tables`とは独立したstateとして持つ（ファイル
-  // 冒頭コメント「品目一覧の取得方法」参照）。
-  const [menuItemsState, setMenuItemsState] = useState<
-    | { status: "loading" }
-    | { status: "error" }
-    | { status: "ready"; items: ReadonlyArray<MenuItemListing> }
-  >({ status: "loading" });
+  /**
+   * タスク8.4で追加: `updateOrderItemStatus`成功応答（`{id, status}`）を
+   * `state.tables`の該当卓の該当明細へマージする。`mutationSeqRef`の
+   * インクリメントは8.2/8.3の各マージ関数と同型のガード（ファイル冒頭
+   * コメント「タスク8.4での更新」参照）。
+   */
+  function mergeUpdatedItemStatus(
+    tableId: string,
+    item: { id: string; status: OrderItemSummary["status"] },
+  ) {
+    mutationSeqRef.current += 1;
+    setState((prev) => {
+      if (prev.status !== "ready") {
+        return prev;
+      }
+      return {
+        status: "ready",
+        tables: prev.tables.map((table) => {
+          if (table.tableId !== tableId) {
+            return table;
+          }
+          return {
+            ...table,
+            items: table.items.map((existing) =>
+              existing.id === item.id
+                ? { ...existing, status: item.status }
+                : existing,
+            ),
+          };
+        }),
+      };
+    });
+  }
+
+  const {
+    updateStatus,
+    updateStatusError,
+    clearUpdateStatusError,
+  } = useUpdateOrderItemStatus(gateway, mergeUpdatedItemStatus);
 
   useEffect(() => {
     let cancelled = false;
@@ -439,14 +533,15 @@ export default function FloorMap({ storeId }: FloorMapProps) {
     };
   }, [gateway, storeId]);
 
-  // タスク8.2で追加（8.3で品目追加・削除のエラーも合わせてクリアするよう
-  // 拡張）: 選択中の卓が切り替わる（別の卓を選ぶ／パネルを閉じる）たびに、
-  // 直前の操作エラーを持ち越さない（別の卓のパネルへ古いエラーメッセージを
-  // 誤って表示することを防ぐ）。
+  // タスク8.2で追加（8.3で品目追加・削除、8.4でステータス変更のエラーも
+  // 合わせてクリアするよう拡張）: 選択中の卓が切り替わる（別の卓を選ぶ／
+  // パネルを閉じる）たびに、直前の操作エラーを持ち越さない（別の卓の
+  // パネルへ古いエラーメッセージを誤って表示することを防ぐ）。
   useEffect(() => {
     clearCheckInError();
     clearAddItemError();
     clearRemoveItemError();
+    clearUpdateStatusError();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTableId]);
 
@@ -668,6 +763,15 @@ export default function FloorMap({ storeId }: FloorMapProps) {
           removeItemErrorMessage={
             removeItemError && removeItemError.tableId === selectedTable.tableId
               ? removeItemError.message
+              : null
+          }
+          onUpdateItemStatus={(orderItemId, status) =>
+            updateStatus(selectedTable.tableId, orderItemId, status)
+          }
+          updateStatusErrorMessage={
+            updateStatusError &&
+            updateStatusError.tableId === selectedTable.tableId
+              ? updateStatusError.message
               : null
           }
         />

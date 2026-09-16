@@ -21,7 +21,13 @@
 // `objectContaining`で部分一致するのみのため追加フィールドがあっても
 // 元々失敗しないが、拡張そのものを直接検証する新しいテストを追加する。
 //
-// Requirements: 2.2, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6
+// タスク8.4で更新（0014_list_register_feed_item_genre.sql）: 各明細に
+// genre（list_kitchen_feedと同じmenu_itemsへのjoinで取得。statusの
+// ジャンルに応じた日本語表示・進めるボタンの次ステータス判定に必須）を
+// 追加した。0012と同じ理由で、拡張そのものを直接検証する新しいテストを
+// 追加する。
+//
+// Requirements: 2.2, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7
 import { randomUUID } from "node:crypto";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { Pool } from "pg";
@@ -91,6 +97,7 @@ interface TableBillingSummary {
     unitPrice: number;
     optionsSummary: string | null;
     status: string;
+    genre: string;
   }>;
   total: number;
   hasOpenCallRequest: boolean;
@@ -332,6 +339,28 @@ describe("0004_rpc_staff_gateway.sql: list_register_feed RPC（結合テスト�
     });
     // シードしたorder_itemsはoptions_summaryを指定していないためnullになる。
     expect(itemA?.optionsSummary).toBeNull();
+  });
+
+  it("各明細にmenu_items.genreをそのまま返す（タスク8.4、list_kitchen_feedと同じjoinパターン。要件5.7）", async () => {
+    const { client, authUserId } = await createDeviceClient(
+      "register",
+      storeId,
+    );
+    createdAuthUserIds.push(authUserId);
+
+    const { data, error } = await callListRegisterFeed(client, storeId);
+    expect(error).toBeNull();
+
+    const row = (data as TableBillingSummary[]).find(
+      (r) => r.tableId === occupiedTableId,
+    );
+    expect(row).toBeDefined();
+
+    const itemA = row?.items.find((item) => item.menuItemId === menuItemAId);
+    const itemB = row?.items.find((item) => item.menuItemId === menuItemBId);
+    // beforeAllでmenuItemAは'food'、menuItemBは'drink'としてシードしている。
+    expect(itemA?.genre).toBe("food");
+    expect(itemB?.genre).toBe("drink");
   });
 
   it(
