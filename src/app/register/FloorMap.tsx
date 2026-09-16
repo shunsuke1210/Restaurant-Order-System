@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createBrowserClient } from "@/lib/supabase/client";
 import {
   createStaffOperationsGateway,
   type TableBillingSummary,
 } from "@/lib/gateways/staffOperationsGateway";
+import { useCheckIn } from "./useCheckIn";
+import TableDetailPanel from "./TableDetailPanel";
 
 /**
  * 卓マップ（design.md「RegisterConsole」の卓マップ表示部分）。
@@ -82,17 +84,69 @@ import {
  * ——見落としに対する低コストな二重の安全網として残すか、9.2着手時に
  * 再検討する。
  *
- * ## mutationSeqRefを導入しない理由（7.6 Implementation Notes参照）
- * tasks.md Implementation Notes（7.6）は「背景フェッチが確定済みローカル
- * 状態全体を無条件で置き換えるパターン」と「ユーザー操作起点の即時ローカル
- * マージパターン」が同一コンポーネントに共存する場合の競合
- * （`mutationSeqRef`による対策）を記録しているが、本タスク（8.1）は
- * 表示専用でありローカルマージを行う書き込み操作を一切持たないため、
- * その競合は本コンポーネントには存在しない。8.2以降が本コンポーネント
- * （またはその後継）へローカル即時マージ（例: 人数変更後の即時反映）を
- * 追加する場合は、追加する時点でこの設計判断の再検討・`mutationSeqRef`
- * 相当のガード導入を行うこと（tasks.md 7.6 Implementation Notesの注意書き
- * 「事後発見ではなく設計時点で織り込む」に従う）。
+ * ## タスク8.2での更新: 卓詳細パネルと入店操作（人数入力）
+ * 8.1時点の本コメント「mutationSeqRefを導入しない理由」が予告していた通り、
+ * 8.2は本コンポーネントへローカル即時マージ（入店操作＝`startSession`の
+ * 成功応答マージ）を追加するため、tasks.md 7.6 Implementation Notesの
+ * 設計判断（`mutationSeqRef`という単調増加カウンタで「背景フェッチ」と
+ * 「ユーザー操作起点の即時ローカルマージ」の競合を判定する）を、設計時点から
+ * 織り込んで導入する（`FoodBoard.tsx`/`DrinkBoard.tsx`と同型）。
+ *
+ * ### 起こりうる競合とその対策
+ * 本コンポーネントは5秒間隔の背景ポーリング（`load(false)`）を持つ。
+ * 入店操作（人数入力→「入店する」）による`startSession`呼び出しがポーリング
+ * と競合するタイミング——ポーリングのfetchがin-flightの間に`startSession`が
+ * 解決してローカル状態へマージされ、その後にポーリングの「チェックイン前の
+ * 古いスナップショット（空席のまま）」が届く——では、対策が無いとポーリング
+ * 側が丸ごと`setState`し、たった今マージした来店中の状態を空席へ巻き戻して
+ * しまう。これは本タスクの観測可能な完了条件
+ * 「入店操作で人数を入力し確定すると、卓マップのタイルにその人数が表示
+ * される」が暗に要求する「その表示が一瞬で消えたりしない」という性質を
+ * 破る重大なバグになる。対策は`mutationSeqRef`（`startSession`成功時の
+ * マージのたびにインクリメント）と、`load()`内でフェッチ開始時点の値を
+ * 記録し解決時に不一致なら結果を破棄する、という7.6の設計をそのまま
+ * 再利用する（回帰テストはFloorMap.test.tsxの「check-in成功より前に
+ * 開始した背景ポーリングが...」を参照）。
+ *
+ * ### `startSession`応答からのローカル状態合成について（design decision A）
+ * `startSession`が返す`TableSession`（`{id, tableId, status, startedAt,
+ * closedAt, partySize}`）は`TableBillingSummary`（`items`/`total`/
+ * `hasOpenCallRequest`を持つ）より情報が少ない。しかし「たった今新規発行
+ * されたセッション」は定義上まだ注文（`items`）も呼び出し
+ * （`hasOpenCallRequest`）も持ちえない（`start_session`は新しい
+ * `table_sessions`行をINSERTするのみで、`order_items`/`call_requests`との
+ * 関連は一切生成しない）ため、`items: []`・`total: 0`・
+ * `hasOpenCallRequest: false`を安全に合成できる（`mergeStartedSession`
+ * 参照）。次回の背景ポーリングが、その間に発生した実際の注文・呼び出しを
+ * 自然に反映する。
+ *
+ * ### SESSION_ALREADY_ACTIVE（要件3.2）の扱いについて（design decision B）
+ * 二重入店操作（複数レジ端末・誤操作の連打）で実際に起こりうるエラーで
+ * あり、単なる防御的分岐ではない。既存セッションの実際の人数・注文内容を
+ * 知らないため、それらを推測してローカル状態を占有中へ書き換えることは
+ * せず（`useCheckIn.ts`が`mergeStartedSession`を呼び出さない）、次回の
+ * 背景ポーリングが真のサーバー状態を自然に反映するのに任せる
+ * （SoldOutBoard.tsx/useAdvanceOrderItemStatus.tsが確立した「ドキュメント化
+ * された業務エラーはローカル状態を不変のまま次回ポーリングに委ねる」という
+ * 既存方針をそのまま踏襲）。専用メッセージの文言・`TABLE_NOT_FOUND`/
+ * `FORBIDDEN`の汎用フォールバックへの割り当ては`useCheckIn.ts`冒頭コメント
+ * を参照。
+ *
+ * ### 確認モーダルを設けない理由（design decision C）
+ * 要件3.1には3.3（会計操作）・3.5（人数変更）・5.5-5.7（品目追加/削除/
+ * ステータス変更）に共通する「実行前に確認を求め」という文言が無い。
+ * 人数入力ステッパー＋「入店する」ボタン自体が既に確定操作であるため、
+ * 二重の確認ダイアログは追加しない（`TableDetailPanel.tsx`冒頭コメント
+ * 参照）。
+ *
+ * ### パネルが常に最新の`state.tables`を参照する理由（design decision D、要件5.3）
+ * `TableDetailPanel`へ渡す`table`は、`selectedTableId`をキーに
+ * `state.tables`から都度`find`した値であり、選択時点のスナップショットを
+ * 保持しない。既存の5秒背景ポーリングが`state.tables`を更新するたびに
+ * 親（本コンポーネント）が再レンダリングされ、開いたままのパネルにも
+ * 新しい注文・合計が新規のfetch呼び出しを伴わずに反映される
+ * （要件5.3「選択中の卓に新たな注文が追加されたら表示中の明細・合計を
+ * 更新する」を、新規のポーリング機構を増やさずに満たす）。
  */
 export const REGISTER_FLOOR_MAP_POLL_INTERVAL_MS = 5000;
 
@@ -122,17 +176,23 @@ const AREA_SECTIONS: ReadonlyArray<{
   { key: "other", title: "その他" },
 ];
 
-/** ファイル冒頭コメント「金額フォーマットについて」参照。 */
-function formatYen(amount: number): string {
+/**
+ * ファイル冒頭コメント「金額フォーマットについて」参照。タスク8.2で
+ * `TableDetailPanel.tsx`からも再利用するためexportする（同一ファイル内の
+ * 表記を1箇所に保つため、TableDetailPanel側での複製はしない）。
+ */
+export function formatYen(amount: number): string {
   return `¥${amount.toLocaleString("ja-JP")}`;
 }
 
 /**
  * mock-preview.htmlの`elapsedMin(ts) = Math.max(0, Math.floor((Date.now() -
  * ts) / 60000))`と同じ算出式（`ts`はISO文字列のため`Date.parse`相当で
- * ミリ秒へ変換してから適用する）。
+ * ミリ秒へ変換してから適用する）。タスク8.2で`TableDetailPanel.tsx`からも
+ * 再利用するためexportする（タスク文書の指示「reuse/mirror FloorMap.tsx's
+ * existing elapsed-minutes formula — do not reinvent」に従う）。
  */
-function elapsedMinutes(startedAtIso: string): number {
+export function elapsedMinutes(startedAtIso: string): number {
   const startedAtMs = new Date(startedAtIso).getTime();
   return Math.max(0, Math.floor((Date.now() - startedAtMs) / 60000));
 }
@@ -165,6 +225,54 @@ export default function FloorMap({ storeId }: FloorMapProps) {
     [],
   );
   const [state, setState] = useState<BoardState>({ status: "loading" });
+  const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
+
+  // タスク8.2で追加: ファイル冒頭コメント「タスク8.2での更新」参照。
+  // startSession成功時のローカルマージのたびにインクリメントする単調増加
+  // カウンタ。tasks.md 7.6 Implementation Notesの設計をそのまま踏襲する。
+  const mutationSeqRef = useRef(0);
+
+  /**
+   * タスク8.2で追加: `startSession`成功応答をFloorMapの`state.tables`へ
+   * 合成する（ファイル冒頭コメント「design decision A」参照。`items: []`・
+   * `total: 0`・`hasOpenCallRequest: false`は、新規発行直後のセッションが
+   * まだ注文・呼び出しを一切持ちえないことに基づく安全な合成）。
+   */
+  function mergeStartedSession(
+    tableId: string,
+    session: { id: string; startedAt: string; partySize: number },
+  ) {
+    mutationSeqRef.current += 1;
+    setState((prev) =>
+      prev.status === "ready"
+        ? {
+            status: "ready",
+            tables: prev.tables.map((table) =>
+              table.tableId === tableId
+                ? {
+                    ...table,
+                    activeSession: session,
+                    items: [],
+                    total: 0,
+                    hasOpenCallRequest: false,
+                  }
+                : table,
+            ),
+          }
+        : prev,
+    );
+  }
+
+  const { checkIn, submittingTableId, checkInError, clearCheckInError } =
+    useCheckIn(gateway, mergeStartedSession);
+
+  // タスク8.2で追加: 選択中の卓が切り替わる（別の卓を選ぶ／パネルを閉じる）
+  // たびに、直前の入店操作エラーを持ち越さない（別の卓のパネルへ古い
+  // エラーメッセージを誤って表示することを防ぐ）。
+  useEffect(() => {
+    clearCheckInError();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTableId]);
 
   // FoodBoard.tsx（7.2）が確立した既存パターン——マウント時の初回取得と
   // 背景ポーリングを、1つのuseEffect内でローカルに定義した非同期関数として
@@ -178,6 +286,10 @@ export default function FloorMap({ storeId }: FloorMapProps) {
     // エラー）は常に例外としてthrowされる（Resultのエラーメンバーには
     // 決して現れない）ため、必ずtry/catchで捕捉する。
     async function load(isInitialLoad: boolean) {
+      // タスク8.2で追加: フェッチ開始時点のmutationSeqRefを記録する
+      // （ファイル冒頭コメント「タスク8.2での更新」、FoodBoard.tsxの
+      // 7.6と同型のガード）。
+      const fetchSeq = mutationSeqRef.current;
       try {
         const result = await gateway.listRegisterFeed({ storeId });
         if (cancelled) {
@@ -189,6 +301,17 @@ export default function FloorMap({ storeId }: FloorMapProps) {
           if (isInitialLoad) {
             setState({ status: "error", message: GENERIC_ERROR_MESSAGE });
           }
+          return;
+        }
+        if (mutationSeqRef.current !== fetchSeq) {
+          // タスク8.2で追加: このフェッチが開始してから解決するまでの間に
+          // checkIn()によるローカルマージが発生した——このフェッチが持つ
+          // スナップショットはそのマージより古い可能性がある。丸ごと
+          // 上書きすると、たった今マージしたばかりの来店中の状態を空席へ
+          // 巻き戻してしまう（7.6レビューで発見された競合と同型、tasks.md
+          // Implementation Notes参照）。このフェッチの結果は破棄し、次回の
+          // ポーリングに委ねる（その頃にはサーバー側の実データ自体がこの
+          // マージ結果を反映済みのため、次回フェッチは安全に適用できる）。
           return;
         }
         setState({ status: "ready", tables: result.value });
@@ -235,6 +358,13 @@ export default function FloorMap({ storeId }: FloorMapProps) {
 
   const grouped = groupByArea(state.tables);
 
+  // タスク8.2で追加: ファイル冒頭コメント「design decision D」参照。
+  // 選択中卓の`TableBillingSummary`は、クリック時点のスナップショットでは
+  // なく`state.tables`から都度探索した最新値を用いる（背景ポーリングの
+  // 結果が反映されるたびに、開いたままのパネルも新しい注文・合計へ追随する）。
+  const selectedTable =
+    state.tables.find((table) => table.tableId === selectedTableId) ?? null;
+
   return (
     <div data-testid="register-floor-map" className="flex flex-col gap-3 p-3">
       <div className="flex items-baseline justify-between">
@@ -266,11 +396,14 @@ export default function FloorMap({ storeId }: FloorMapProps) {
                 </p>
               ) : (
                 tables.map((table) => (
-                  <div
+                  <button
+                    type="button"
                     key={table.tableId}
                     data-testid={`register-floor-tile-${table.tableLabel}`}
+                    onClick={() => setSelectedTableId(table.tableId)}
+                    aria-pressed={selectedTableId === table.tableId}
                     className={
-                      "relative flex flex-col gap-1 rounded-lg border p-2 text-xs shadow-sm " +
+                      "relative flex flex-col gap-1 rounded-lg border p-2 text-left text-xs shadow-sm " +
                       (table.activeSession
                         ? "border-neutral-300 bg-white"
                         : "border-neutral-200 bg-neutral-50")
@@ -311,13 +444,27 @@ export default function FloorMap({ storeId }: FloorMapProps) {
                         </div>
                       </>
                     )}
-                  </div>
+                  </button>
                 ))
               )}
             </div>
           </div>
         );
       })}
+
+      {selectedTable ? (
+        <TableDetailPanel
+          table={selectedTable}
+          onClose={() => setSelectedTableId(null)}
+          onCheckIn={(partySize) => void checkIn(selectedTable.tableId, partySize)}
+          submitting={submittingTableId === selectedTable.tableId}
+          checkInErrorMessage={
+            checkInError && checkInError.tableId === selectedTable.tableId
+              ? checkInError.message
+              : null
+          }
+        />
+      ) : null}
     </div>
   );
 }
