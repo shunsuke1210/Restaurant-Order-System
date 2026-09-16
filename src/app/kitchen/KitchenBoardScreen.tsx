@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { ensureDeviceSession } from "@/lib/device/useDeviceIdentity";
 import KitchenTabs, { KITCHEN_TABS, type KitchenTabId } from "./KitchenTabs";
+import FoodBoard from "./FoodBoard";
 
 /**
  * 厨房KDS画面の実体（design.md「KitchenBoard」コンポーネント）。
@@ -21,6 +22,15 @@ import KitchenTabs, { KITCHEN_TABS, type KitchenTabId } from "./KitchenTabs";
  * - `useRealtimeFeed`の配線・接続断表示（7.6）
  * - ステータス更新操作（7.5）
  * そのため各タブの内容は簡易なプレースホルダー文言のみとする。
+ *
+ * ## タスク7.2での更新: フードボードタブの実データ表示への置き換え
+ * 7.2は上記スコープのうち「フードボードの実データ表示」のみを実装する
+ * （ドリンク/売り切れは引き続きプレースホルダーのまま、7.3/7.4のスコープ）。
+ * "food"タブ選択中は、7.1時点のプレースホルダー文言の代わりに
+ * `FoodBoard`（`./FoodBoard.tsx`）へ委譲する。`FoodBoard`は
+ * `view.status === "ready"`（＝kitchenロールのデバイスセッション確立済み）
+ * の場合にのみマウントされ、`ensureDeviceSession`が返した
+ * `DeviceIdentity.storeId`をpropsとして受け取る。
  *
  * ## デバイスセッション確認について（タスク9.1との役割分担）
  * `/kitchen`はデバイス識別基盤（タスク2.1-2.3）が要求するkitchen-role
@@ -57,7 +67,7 @@ import KitchenTabs, { KITCHEN_TABS, type KitchenTabId } from "./KitchenTabs";
 type ViewState =
   | { status: "checking-device" }
   | { status: "device-unavailable"; message: string }
-  | { status: "ready" };
+  | { status: "ready"; storeId: string };
 
 const NOT_PROVISIONED_MESSAGE =
   "このタブレットは厨房用デバイスとしてセットアップされていません。店舗スタッフにご確認のうえ、/setup/kitchen からセットアップしてください。";
@@ -68,8 +78,10 @@ const WRONG_ROLE_MESSAGE =
 const GENERIC_DEVICE_ERROR_MESSAGE =
   "デバイスの確認中に予期しないエラーが発生しました。ネットワーク接続をご確認のうえ、画面を再読み込みしてください。";
 
-const PLACEHOLDER_TEXT: Record<KitchenTabId, string> = {
-  food: "フードボード（実装は7.2）",
+// "food"は7.2でFoodBoard（実データ表示）へ置き換え済みのため対象外
+// （下記レンダリング分岐参照）。ドリンク/売り切れは引き続き7.3/7.4が
+// 実装するまでの簡易プレースホルダー文言のみ。
+const PLACEHOLDER_TEXT: Record<Exclude<KitchenTabId, "food">, string> = {
   drink: "ドリンクボード（実装は7.3）",
   soldout: "売り切れボード（実装は7.4）",
 };
@@ -105,7 +117,7 @@ export default function KitchenBoardScreen() {
           });
           return;
         }
-        setView({ status: "ready" });
+        setView({ status: "ready", storeId: result.value.storeId });
       } catch {
         if (!cancelled) {
           setView({
@@ -167,12 +179,16 @@ export default function KitchenBoardScreen() {
         data-testid="kitchen-scroll-area"
         className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
       >
-        <p
-          data-testid="kitchen-board-placeholder"
-          className="p-4 text-sm text-neutral-500"
-        >
-          {PLACEHOLDER_TEXT[activeTab]}
-        </p>
+        {activeTab === "food" ? (
+          <FoodBoard storeId={view.storeId} />
+        ) : (
+          <p
+            data-testid="kitchen-board-placeholder"
+            className="p-4 text-sm text-neutral-500"
+          >
+            {PLACEHOLDER_TEXT[activeTab]}
+          </p>
+        )}
       </div>
     </div>
   );

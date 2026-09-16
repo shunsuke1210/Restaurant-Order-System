@@ -12,9 +12,27 @@ vi.mock("@/lib/device/useDeviceIdentity", () => ({
   ensureDeviceSession: (...args: unknown[]) => mockEnsureDeviceSession(...args),
 }));
 
+// タスク7.2: デフォルトタブが"food"のため、デバイスセッション確立済み
+// （"ready"）の全テストで必ずFoodBoardがマウントされ
+// `createStaffOperationsGateway(...).listKitchenFeed`を呼び出す。
+// FoodBoard自体の詳細な振る舞い（ジャンル絞り込み・並び順保持・カード表示・
+// エラー処理）はFoodBoard.test.tsxで専用に検証するため、ここでは
+// KitchenBoardScreen固有の関心事（タブ切り替え・固定ヘッダー構造）を
+// 阻害しないよう空配列を返す最小限のモックに留める
+// （MenuScreen.test.tsxのcustomerOrderingGatewayモックと同型の方式）。
+const mockListKitchenFeed = vi.fn();
+
+vi.mock("@/lib/gateways/staffOperationsGateway", () => ({
+  createStaffOperationsGateway: () => ({
+    listKitchenFeed: (...args: unknown[]) => mockListKitchenFeed(...args),
+  }),
+}));
+
 describe("KitchenBoardScreen", () => {
   beforeEach(() => {
     mockEnsureDeviceSession.mockReset();
+    mockListKitchenFeed.mockReset();
+    mockListKitchenFeed.mockResolvedValue({ ok: true, value: [] });
   });
 
   it("デバイスが未プロビジョニング（NOT_PROVISIONED）の場合、クラッシュせず案内メッセージを表示する", async () => {
@@ -65,20 +83,24 @@ describe("KitchenBoardScreen", () => {
       });
     });
 
-    it("初期表示はフードボードのタブが選択され、そのプレースホルダーを表示する", async () => {
+    it("初期表示はフードボードのタブが選択され、FoodBoard（実データ表示、タスク7.2）が表示される", async () => {
       render(<KitchenBoardScreen />);
 
-      expect(
-        await screen.findByTestId("kitchen-board-placeholder"),
-      ).toHaveTextContent("フードボード（実装は7.2）");
+      // タスク7.2でフードボードのプレースホルダーはFoodBoardへ置き換わった。
+      // FoodBoard自体の中身の検証（ジャンル絞り込み・並び順保持・カード
+      // 表示等）はFoodBoard.test.tsxが専用に担うため、ここではKitchenBoard
+      // Screenの責務——正しいタブ選択状態でFoodBoardがマウントされること
+      // ——のみを検証する。
+      expect(await screen.findByTestId("food-board")).toBeInTheDocument();
       expect(
         screen.getByRole("tab", { name: "フードボード" }),
       ).toHaveAttribute("aria-selected", "true");
+      expect(mockListKitchenFeed).toHaveBeenCalledWith({ storeId: "store-1" });
     });
 
     it("3つのタブ（フード／ドリンク／売り切れ）が表示され、クリックで表示内容が切り替わる（他のタブの内容は表示されない）", async () => {
       render(<KitchenBoardScreen />);
-      await screen.findByTestId("kitchen-board-placeholder");
+      await screen.findByTestId("food-board");
 
       const foodTab = screen.getByRole("tab", { name: "フードボード" });
       const drinkTab = screen.getByRole("tab", { name: "ドリンクボード" });
@@ -88,9 +110,7 @@ describe("KitchenBoardScreen", () => {
       expect(screen.getByTestId("kitchen-board-placeholder")).toHaveTextContent(
         "ドリンクボード（実装は7.3）",
       );
-      expect(
-        screen.queryByText("フードボード（実装は7.2）"),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByTestId("food-board")).not.toBeInTheDocument();
       expect(drinkTab).toHaveAttribute("aria-selected", "true");
       expect(foodTab).toHaveAttribute("aria-selected", "false");
 
@@ -104,14 +124,15 @@ describe("KitchenBoardScreen", () => {
       expect(soldoutTab).toHaveAttribute("aria-selected", "true");
 
       fireEvent.click(foodTab);
-      expect(screen.getByTestId("kitchen-board-placeholder")).toHaveTextContent(
-        "フードボード（実装は7.2）",
-      );
+      expect(await screen.findByTestId("food-board")).toBeInTheDocument();
+      expect(
+        screen.queryByText("売り切れボード（実装は7.4）"),
+      ).not.toBeInTheDocument();
     });
 
     it("固定ヘッダー（タブバー含む）とスクロール領域は兄弟要素であり、タブバーはスクロール領域の子孫ではない", async () => {
       render(<KitchenBoardScreen />);
-      await screen.findByTestId("kitchen-board-placeholder");
+      await screen.findByTestId("food-board");
 
       const header = screen.getByTestId("kitchen-fixed-header");
       const scrollArea = screen.getByTestId("kitchen-scroll-area");
