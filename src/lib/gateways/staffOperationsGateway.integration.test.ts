@@ -631,6 +631,10 @@ describe("staffOperationsGateway（結合テスト、実RPCへの疎通確認）
         partySize: 2,
       },
       hasOpenCallRequest: false, // resolveCallRequestのテストで既にresolved済みのため
+      // タスク8.6（0015_list_register_feed_open_call_request_id.sql）:
+      // 既にresolved済みのためnullになる（listRegisterFeed.integration.test.ts
+      // が全ライフサイクル、非nullのケースも含めて検証する）。
+      openCallRequestId: null,
     });
 
     // タスク8.3（0012_list_register_feed_item_id.sql）: 品目操作卓
@@ -656,6 +660,7 @@ describe("staffOperationsGateway（結合テスト、実RPCへの疎通確認）
         expect(table.items).toEqual([]);
         expect(table.total).toBe(0);
         expect(table.hasOpenCallRequest).toBe(false);
+        expect(table.openCallRequestId).toBeNull();
       }
     }
   });

@@ -27,7 +27,14 @@
 // 追加した。0012と同じ理由で、拡張そのものを直接検証する新しいテストを
 // 追加する。
 //
-// Requirements: 2.2, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7
+// タスク8.6で更新（0015_list_register_feed_open_call_request_id.sql）: 卓
+// レベルにopenCallRequestId（対象のcall_requests.id、無ければnull）を
+// 追加した。resolveCallRequest（{callRequestId}）の対象識別に必須。
+// 既存のhasOpenCallRequestの全ライフサイクルテストと対にして、
+// openCallRequestIdが同じ3段階（呼び出し前null→作成後に実IDを返す→
+// resolve後に再びnull）を正しく追跡することを検証する新しいテストを追加する。
+//
+// Requirements: 2.2, 2.4, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7
 import { randomUUID } from "node:crypto";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { Pool } from "pg";
@@ -101,6 +108,7 @@ interface TableBillingSummary {
   }>;
   total: number;
   hasOpenCallRequest: boolean;
+  openCallRequestId: string | null;
 }
 
 async function callListRegisterFeed(
@@ -265,6 +273,7 @@ describe("0004_rpc_staff_gateway.sql: list_register_feed RPC（結合テスト�
       items: [],
       total: 0,
       hasOpenCallRequest: false,
+      openCallRequestId: null,
     });
   });
 
@@ -436,6 +445,62 @@ describe("0004_rpc_staff_gateway.sql: list_register_feed RPC（結合テスト�
         (r) => r.tableId === occupiedTableId,
       );
       expect(afterRow?.hasOpenCallRequest).toBe(false);
+    },
+  );
+
+  it(
+    "openCallRequestId: 呼び出し前はnull→create_call_request後は実在の" +
+      "call_requests.idを返す→resolve_call_request後は再びnullになる" +
+      "（タスク8.6、要件2.4の全ライフサイクル。resolveCallRequestの対象" +
+      "識別に用いる実際のIDであることをDB直接クエリで検証する）",
+    async () => {
+      const { client, authUserId } = await createDeviceClient(
+        "register",
+        storeId,
+      );
+      createdAuthUserIds.push(authUserId);
+      const anonClient = newAnonClient();
+
+      const before = await callListRegisterFeed(client, storeId);
+      expect(before.error).toBeNull();
+      const beforeRow = (before.data as TableBillingSummary[]).find(
+        (r) => r.tableId === occupiedTableId,
+      );
+      expect(beforeRow?.openCallRequestId).toBeNull();
+
+      const createResult = await anonClient.rpc("create_call_request", {
+        p_session_id: occupiedSessionId,
+      });
+      expect(createResult.error).toBeNull();
+      const callRequestId = (createResult.data as { id: string }).id;
+      createdCallRequestIds.push(callRequestId);
+
+      const during = await callListRegisterFeed(client, storeId);
+      expect(during.error).toBeNull();
+      const duringRow = (during.data as TableBillingSummary[]).find(
+        (r) => r.tableId === occupiedTableId,
+      );
+      // list_register_feedが返すIDが、実際にDBに存在するopenなcall_requests
+      // 行のidと完全に一致すること（resolveCallRequestの対象識別に安全に
+      // 使えることの根拠）。
+      expect(duringRow?.openCallRequestId).toBe(callRequestId);
+      const dbRow = await pool.query(
+        "select status from call_requests where id = $1",
+        [callRequestId],
+      );
+      expect(dbRow.rows[0]?.status).toBe("open");
+
+      const resolveResult = await client.rpc("resolve_call_request", {
+        p_call_request_id: callRequestId,
+      });
+      expect(resolveResult.error).toBeNull();
+
+      const after = await callListRegisterFeed(client, storeId);
+      expect(after.error).toBeNull();
+      const afterRow = (after.data as TableBillingSummary[]).find(
+        (r) => r.tableId === occupiedTableId,
+      );
+      expect(afterRow?.openCallRequestId).toBeNull();
     },
   );
 

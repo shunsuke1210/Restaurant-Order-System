@@ -13,6 +13,7 @@ import { useAddOrderItem } from "./useAddOrderItem";
 import { useRemoveOrderItem } from "./useRemoveOrderItem";
 import { useUpdateOrderItemStatus } from "./useUpdateOrderItemStatus";
 import { useCloseSession } from "./useCloseSession";
+import { useResolveCallRequest } from "./useResolveCallRequest";
 import TableDetailPanel from "./TableDetailPanel";
 
 /**
@@ -253,6 +254,41 @@ import TableDetailPanel from "./TableDetailPanel";
  * 適用すること」と予告していた通り）。回帰テストは`FloorMap.test.tsx`に
  * 「会計成功より前に開始した背景ポーリングが...」を追加した（7.6/8.2/8.3/8.4
  * の回帰テストと同型）。
+ *
+ * ## タスク8.6での更新: 呼び出し対応UI（確認モーダル無し、要件2.4）
+ * 8.2が実装した卓詳細パネルの呼び出し中バナーへ、本タスクで「対応済みに
+ * する」ボタンを追加する（`TableDetailPanel.tsx`冒頭コメント参照）。
+ * 8.1のタイルの呼出バッジ（`hasOpenCallRequest`）と8.2のパネルバナーは
+ * いずれも同じ`state.tables`（本コンポーネントが保持する唯一の状態）を
+ * 参照しているため、`mergeResolvedCallRequest`が`state.tables`を更新すれば
+ * 両方が単一の変更で同時に消える——本タスクの観測可能な完了条件
+ * 「呼び出し対応操作を行うと通知表示が消える」を、新しい同期機構なしに
+ * 満たす（`FloorMap.test.tsx`で両方を独立にアサートする）。
+ *
+ * ### 確認モーダルを設けない（要件2.4に「実行前に確認を求め」の文言が無い）
+ * 8.3〜8.5のレジ側書き込み操作はいずれも確認モーダルを経由したが、要件2.4
+ * にはその文言が一切無い。`useResolveCallRequest.ts`冒頭コメント参照。
+ *
+ * ### `mergeResolvedCallRequest`がsessionIdで対象卓を探す理由
+ * `resolveCallRequest`の成功応答（`CallRequest`）は`sessionId`を持つが
+ * `tableId`を持たない。他の5つのマージ関数（`mergeStartedSession`等）は
+ * いずれも呼び出し元から渡された`tableId`をそのままキーに`state.tables`を
+ * 更新するが、本関数は応答が実際に運ぶ権威的な識別子（`sessionId`）と
+ * `table.activeSession?.id`が一致する卓を探して更新する
+ * （`useResolveCallRequest.ts`冒頭コメント「`mergeResolvedCallRequest`が
+ * tableIdではなくsessionIdで対象卓を探す理由」参照。tasks.mdのタスク文書
+ * 「design decisions D」が明示的に指示する設計判断）。
+ *
+ * ### `mutationSeqRef`の適用（6つ目のローカルマージ経路）
+ * 呼び出し対応成功時のローカルマージ（`mergeResolvedCallRequest`）も、
+ * 既存の5秒背景ポーリング・check-in・品目追加・品目削除・ステータス変更・
+ * 会計と同一コンポーネント内で共存するため、同じ`mutationSeqRef`
+ * （インクリメント）＋`load()`内のフェッチ開始時点の値の記録・解決時の
+ * 不一致検出という競合防止をそのまま適用する（7.6/8.2/8.3/8.4/8.5
+ * Implementation Notesが「新しい局所的マージ経路はいずれも同じ競合に
+ * さらされるため、必ず同じガードを適用すること」と予告していた通り）。
+ * 回帰テストは`FloorMap.test.tsx`に「呼び出し対応成功より前に開始した
+ * 背景ポーリングが...」を追加した（7.6/8.2/8.3/8.4/8.5の回帰テストと同型）。
  */
 export const REGISTER_FLOOR_MAP_POLL_INTERVAL_MS = 5000;
 
@@ -560,6 +596,42 @@ export default function FloorMap({ storeId }: FloorMapProps) {
   const { closeSession, closeSessionError, clearCloseSessionError } =
     useCloseSession(gateway, mergeVacatedTable);
 
+  /**
+   * タスク8.6で追加: `resolveCallRequest`成功応答（`CallRequest`、
+   * `sessionId`を持つ）から、`activeSession.id`が一致する卓を探して
+   * `hasOpenCallRequest: false`・`openCallRequestId: null`へ合成する
+   * （ファイル冒頭コメント「タスク8.6での更新」参照。`tableId`ではなく
+   * `sessionId`で対象を探す理由は`useResolveCallRequest.ts`冒頭コメント
+   * 参照）。8.1のタイルの呼出バッジと8.2のパネルバナーは同じ
+   * `state.tables`を参照しているため、この単一の更新で両方が同時に消える。
+   */
+  function mergeResolvedCallRequest(sessionId: string) {
+    mutationSeqRef.current += 1;
+    setState((prev) =>
+      prev.status === "ready"
+        ? {
+            status: "ready",
+            tables: prev.tables.map((table) =>
+              table.activeSession?.id === sessionId
+                ? {
+                    ...table,
+                    hasOpenCallRequest: false,
+                    openCallRequestId: null,
+                  }
+                : table,
+            ),
+          }
+        : prev,
+    );
+  }
+
+  const {
+    resolveCall,
+    resolvingTableId,
+    resolveCallError,
+    clearResolveCallError,
+  } = useResolveCallRequest(gateway, mergeResolvedCallRequest);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -609,6 +681,7 @@ export default function FloorMap({ storeId }: FloorMapProps) {
     clearRemoveItemError();
     clearUpdateStatusError();
     clearCloseSessionError();
+    clearResolveCallError();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTableId]);
 
@@ -857,6 +930,23 @@ export default function FloorMap({ storeId }: FloorMapProps) {
             closeSessionError &&
             closeSessionError.tableId === selectedTable.tableId
               ? closeSessionError.message
+              : null
+          }
+          onResolveCallRequest={() => {
+            if (!selectedTable.openCallRequestId) {
+              // 到達しないはずの防御的分岐: 「対応済みにする」ボタンは
+              // table.hasOpenCallRequestが真のときのみ描画され、
+              // list_register_feedはhasOpenCallRequestとopenCallRequestIdを
+              // 同時に更新するため通常は必ず非nullになる
+              // （TableDetailPanel.tsx冒頭コメント「呼び出し対応」参照）。
+              return;
+            }
+            void resolveCall(selectedTable.tableId, selectedTable.openCallRequestId);
+          }}
+          resolvingCallRequest={resolvingTableId === selectedTable.tableId}
+          resolveCallRequestErrorMessage={
+            resolveCallError && resolveCallError.tableId === selectedTable.tableId
+              ? resolveCallError.message
               : null
           }
         />

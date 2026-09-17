@@ -31,6 +31,8 @@ function makeTable(
     items: [],
     total: 0,
     hasOpenCallRequest: false,
+    // タスク8.6で追加（0015_list_register_feed_open_call_request_id.sql）。
+    openCallRequestId: null,
     ...overrides,
   };
 }
@@ -91,6 +93,10 @@ function renderPanel(overrides: Partial<PanelProps> = {}) {
     // タスク8.5で追加。
     onCloseSession: vi.fn().mockResolvedValue(undefined),
     closeSessionErrorMessage: null,
+    // タスク8.6で追加。
+    onResolveCallRequest: vi.fn(),
+    resolvingCallRequest: false,
+    resolveCallRequestErrorMessage: null,
     ...overrides,
   };
   render(<TableDetailPanel {...props} />);
@@ -298,7 +304,7 @@ describe("TableDetailPanel", () => {
       expect(screen.getByText(/まだ注文はありません/)).toBeInTheDocument();
     });
 
-    it("呼び出し中の場合、案内バナーを表示する（対応ボタンは8.6のスコープのため表示しない）", () => {
+    it("呼び出し中の場合、案内バナーと「対応済みにする」ボタンを表示する（タスク8.6）", () => {
       const table = makeTable({
         activeSession: {
           id: "s1",
@@ -306,6 +312,7 @@ describe("TableDetailPanel", () => {
           partySize: 2,
         },
         hasOpenCallRequest: true,
+        openCallRequestId: "call-1",
       });
       renderPanel({ table });
 
@@ -313,11 +320,11 @@ describe("TableDetailPanel", () => {
         "呼び出し中",
       );
       expect(
-        screen.queryByRole("button", { name: "対応済みにする" }),
-      ).not.toBeInTheDocument();
+        screen.getByRole("button", { name: "対応済みにする" }),
+      ).toBeInTheDocument();
     });
 
-    it("呼び出しが無い場合バナーを表示しない", () => {
+    it("呼び出しが無い場合バナー・対応ボタンのいずれも表示しない", () => {
       const table = makeTable({
         activeSession: {
           id: "s1",
@@ -325,11 +332,91 @@ describe("TableDetailPanel", () => {
           partySize: 2,
         },
         hasOpenCallRequest: false,
+        openCallRequestId: null,
       });
       renderPanel({ table });
 
       expect(
         screen.queryByTestId("register-table-detail-call-banner"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "対応済みにする" }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  // タスク8.6: 呼び出し対応UI（確認モーダル無し、要件2.4）。
+  // Requirements: 2.4
+  describe("呼び出し対応（タスク8.6、要件2.4）", () => {
+    function occupiedTableWithCall(
+      overrides: Partial<TableBillingSummary> = {},
+    ) {
+      return makeTable({
+        activeSession: {
+          id: "s1",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          partySize: 2,
+        },
+        hasOpenCallRequest: true,
+        openCallRequestId: "call-1",
+        ...overrides,
+      });
+    }
+
+    it("「対応済みにする」をタップすると、確認モーダルを経由せず直接onResolveCallRequestを呼び出す（要件2.4に確認言及が無いため）", () => {
+      const onResolveCallRequest = vi.fn();
+      const table = occupiedTableWithCall();
+      renderPanel({ table, onResolveCallRequest });
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "対応済みにする" }),
+      );
+
+      // 確認モーダル（alertdialog）が一切表示されないこと自体が、
+      // 「確認モーダルを経由しない」設計判断の直接的な検証になる。
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+      expect(onResolveCallRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it("resolvingCallRequestがtrueの間、対応ボタンが無効化され「処理中...」を表示する（二重送信防止）", () => {
+      const table = occupiedTableWithCall();
+      renderPanel({ table, resolvingCallRequest: true });
+
+      expect(
+        screen.getByRole("button", { name: "処理中..." }),
+      ).toBeDisabled();
+      expect(
+        screen.queryByRole("button", { name: "対応済みにする" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("resolveCallRequestErrorMessageが指定されると警告として表示し、バナー・対応ボタンは表示されたまま維持する（要件E、ローカル状態は不変）", () => {
+      const table = occupiedTableWithCall();
+      renderPanel({
+        table,
+        resolveCallRequestErrorMessage:
+          "この呼び出しは既に対応済みか、見つかりませんでした。",
+      });
+
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "この呼び出しは既に対応済みか、見つかりませんでした。",
+      );
+      // エラー時もローカル状態は強制的に変更しない方針のため、バナー・
+      // ボタンはそのまま表示され続ける。
+      expect(
+        screen.getByTestId("register-table-detail-call-banner"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "対応済みにする" }),
+      ).toBeInTheDocument();
+    });
+
+    it("resolveCallRequestErrorMessageがnullの場合、呼び出し対応のエラー表示をしない", () => {
+      const table = occupiedTableWithCall();
+      renderPanel({ table, resolveCallRequestErrorMessage: null });
+
+      expect(
+        screen.queryByTestId("register-resolve-call-error"),
       ).not.toBeInTheDocument();
     });
   });

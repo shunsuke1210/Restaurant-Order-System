@@ -148,6 +148,45 @@ import OptionSelectionPanel, {
  * B参照）。確認処理関数（`confirmCloseSession`）は8.2/8.3/8.4の各確認処理と
  * 同型に、await完了後に無条件で自身のローカルstate
  * （`closeSubmitting`/`closeConfirming`）を更新する。
+ *
+ * ## 呼び出し対応（タスク8.6、要件2.4）
+ * 8.2が実装した呼び出し中バナー（`table.hasOpenCallRequest`が真の場合に
+ * 表示、対応ボタンは当時「8.6のスコープ」として明示的に未実装のまま
+ * 残されていた）に、本タスクで「対応済みにする」ボタンを追加する。
+ *
+ * **確認モーダルを設けない（design decision、最重要の判断）**: 要件2.4
+ * 「レジスタッフが呼び出しに対応済みとして操作する、当該呼び出し通知を
+ * 対応済みとして扱い、通知表示を消去する」には、要件3.3（会計操作）・
+ * 3.5（人数変更）・5.5-5.7（品目追加/削除/ステータス変更）に共通する
+ * 「実行前に確認を求め」という文言が一切無い。これまでの4つのレジ側
+ * 書き込み操作（8.3〜8.5）がいずれも`ConfirmDialog`を経由していたことに
+ * 引きずられて機械的に確認モーダルを追加しないよう、要件の実際の文言を
+ * 確認した上での判断である（KitchenBoardの品目ステータス更新——要件6.5、
+ * `useAdvanceOrderItemStatus.ts`、タスク7.5——が同じ理由で確認モーダルを
+ * 持たないのと同型）。そのためタップは`onResolveCallRequest`を直接呼び出し、
+ * `ConfirmDialog`は一切表示しない。
+ *
+ * ボタンの表示条件は`table.hasOpenCallRequest`（バナーと同じ、要件2.2の
+ * データを再利用）で、実際のRPC呼び出しに使う`callRequestId`自体は
+ * `table.openCallRequestId`（タスク8.6で`list_register_feed`へ追加、
+ * `0015_list_register_feed_open_call_request_id.sql`）から読む——両者は
+ * `list_register_feed`が同時に更新するため通常は一致するが、本コンポーネント
+ * 自身は`hasOpenCallRequest`の表示条件のみを担い、`openCallRequestId`の
+ * 読み取り・null時の防御的分岐は呼び出し元（FloorMap.tsx、`onClose
+ * CallRequest`を組み立てる側）の責務とする（`onAddItem`/`onCloseSession`が
+ * 既に`selectedTable.activeSession`の非null前提をFloorMap側で保証している
+ * のと同じ役割分担）。
+ *
+ * `resolvingCallRequest`（`useResolveCallRequest.ts`の`resolvingTableId`と
+ * 選択中卓の一致から算出、`useAdvanceOrderItemStatus.ts`の`pendingItemId`と
+ * 同型）は処理中のボタンを無効化し、確認モーダルが無いことで生じうる
+ * 二重タップでの多重送信を防ぐ。`resolveCallRequestErrorMessage`
+ * （`CALL_REQUEST_NOT_FOUND`——他端末による先行対応やセッション終了との
+ * 競合で実際に起こりうるレース——を含む）はバナーの直下に警告として表示し、
+ * ローカル状態（バナー・ボタン自体の表示）は強制的に変更しない（8.2〜8.5が
+ * 確立した「ドキュメント化された業務エラーはローカル状態を不変のまま
+ * 次回ポーリングに委ねる」という既存方針をそのまま踏襲、`FloorMap.tsx`の
+ * `mergeResolvedCallRequest`冒頭コメント参照）。
  */
 
 type TableDetailPanelProps = {
@@ -176,6 +215,12 @@ type TableDetailPanelProps = {
   // タスク8.5で追加。
   onCloseSession: () => Promise<void>;
   closeSessionErrorMessage: string | null;
+  // タスク8.6で追加。確認モーダルを経由しないため戻り値はvoid
+  // （fire-and-forgetでFloorMap.tsx側が呼び出す。ファイル冒頭コメント
+  // 「呼び出し対応」参照）。
+  onResolveCallRequest: () => void;
+  resolvingCallRequest: boolean;
+  resolveCallRequestErrorMessage: string | null;
 };
 
 // 要件3.1「人数の入力を求め」に対応する下書きの初期値・下限。上限は要件が
@@ -267,6 +312,9 @@ export default function TableDetailPanel({
   updateStatusErrorMessage,
   onCloseSession,
   closeSessionErrorMessage,
+  onResolveCallRequest,
+  resolvingCallRequest,
+  resolveCallRequestErrorMessage,
 }: TableDetailPanelProps) {
   const [startingSession, setStartingSession] = useState(false);
   const [partySizeDraft, setPartySizeDraft] = useState(DEFAULT_PARTY_SIZE);
@@ -335,6 +383,9 @@ export default function TableDetailPanel({
             updateStatusErrorMessage={updateStatusErrorMessage}
             onCloseSession={onCloseSession}
             closeSessionErrorMessage={closeSessionErrorMessage}
+            onResolveCallRequest={onResolveCallRequest}
+            resolvingCallRequest={resolvingCallRequest}
+            resolveCallRequestErrorMessage={resolveCallRequestErrorMessage}
           />
         )}
       </div>
@@ -466,6 +517,10 @@ type OccupiedViewProps = {
   // タスク8.5で追加。
   onCloseSession: () => Promise<void>;
   closeSessionErrorMessage: string | null;
+  // タスク8.6で追加。
+  onResolveCallRequest: () => void;
+  resolvingCallRequest: boolean;
+  resolveCallRequestErrorMessage: string | null;
 };
 
 type PendingSimpleAdd = { menuItemId: string; name: string };
@@ -485,8 +540,8 @@ const CHECKOUT_CONFIRM_MESSAGE =
   "お会計完了でよろしいですか？完了するとQRコード情報がリセットされます";
 
 /**
- * 来店中のビュー（要件5.1, 5.5, 5.6, 5.7, 3.3）。品目の追加・削除・ステータス
- * 変更・会計操作を扱う（呼び出し対応は8.6のスコープのため引き続き対象外）。
+ * 来店中のビュー（要件5.1, 5.5, 5.6, 5.7, 3.3, 2.4）。品目の追加・削除・
+ * ステータス変更・会計操作・呼び出し対応を扱う。
  */
 function OccupiedView({
   table,
@@ -501,6 +556,9 @@ function OccupiedView({
   updateStatusErrorMessage,
   onCloseSession,
   closeSessionErrorMessage,
+  onResolveCallRequest,
+  resolvingCallRequest,
+  resolveCallRequestErrorMessage,
 }: OccupiedViewProps) {
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [optionItem, setOptionItem] = useState<MenuItemListing | null>(null);
@@ -626,10 +684,28 @@ function OccupiedView({
         <div
           data-testid="register-table-detail-call-banner"
           role="status"
-          className="rounded-lg bg-red-50 px-3 py-2 text-sm font-semibold text-red-700"
+          className="flex items-center justify-between gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm font-semibold text-red-700"
         >
-          呼び出し中
+          <span>呼び出し中</span>
+          <button
+            type="button"
+            onClick={onResolveCallRequest}
+            disabled={resolvingCallRequest}
+            className="shrink-0 rounded-full bg-red-600 px-3 py-1 text-xs font-semibold text-white disabled:opacity-50"
+          >
+            {resolvingCallRequest ? "処理中..." : "対応済みにする"}
+          </button>
         </div>
+      ) : null}
+
+      {resolveCallRequestErrorMessage ? (
+        <p
+          role="alert"
+          data-testid="register-resolve-call-error"
+          className="text-sm text-red-600"
+        >
+          {resolveCallRequestErrorMessage}
+        </p>
       ) : null}
 
       <div

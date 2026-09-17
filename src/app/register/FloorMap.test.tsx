@@ -29,6 +29,7 @@ const mockRemoveOrderItem = vi.fn();
 const mockListMenuItems = vi.fn();
 const mockUpdateOrderItemStatus = vi.fn();
 const mockCloseSession = vi.fn();
+const mockResolveCallRequest = vi.fn();
 
 vi.mock("@/lib/gateways/staffOperationsGateway", () => ({
   createStaffOperationsGateway: () => ({
@@ -40,6 +41,8 @@ vi.mock("@/lib/gateways/staffOperationsGateway", () => ({
     updateOrderItemStatus: (...args: unknown[]) =>
       mockUpdateOrderItemStatus(...args),
     closeSession: (...args: unknown[]) => mockCloseSession(...args),
+    resolveCallRequest: (...args: unknown[]) =>
+      mockResolveCallRequest(...args),
   }),
 }));
 
@@ -56,6 +59,8 @@ function makeTable(
     items: [],
     total: 0,
     hasOpenCallRequest: false,
+    // タスク8.6で追加（0015_list_register_feed_open_call_request_id.sql）。
+    openCallRequestId: null,
     ...overrides,
   };
 }
@@ -91,6 +96,7 @@ describe("FloorMap", () => {
     mockListMenuItems.mockReset();
     mockUpdateOrderItemStatus.mockReset();
     mockCloseSession.mockReset();
+    mockResolveCallRequest.mockReset();
     // タスク8.3で追加: FloorMapはマウント時に常にlistMenuItemsを呼び出す
     // ため、それを検証しないテストのための既定値（空配列）を用意する。
     mockListMenuItems.mockResolvedValue({ ok: true, value: [] });
@@ -1345,6 +1351,231 @@ describe("FloorMap", () => {
       expect(within(tile).getByTestId("register-floor-tile-vacant")).toBeInTheDocument();
       expect(
         within(tile).queryByTestId("register-floor-tile-occupancy"),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  // タスク8.6: 呼び出し対応UI（確認モーダル無し、要件2.4）。
+  // Requirements: 2.4
+  describe("呼び出し対応（タスク8.6）", () => {
+    function occupiedTableWithCall(
+      overrides: Partial<TableBillingSummary> = {},
+    ): TableBillingSummary {
+      return makeTable({
+        tableLabel: "T1",
+        activeSession: {
+          id: "session-1",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          partySize: 2,
+        },
+        hasOpenCallRequest: true,
+        openCallRequestId: "call-1",
+        ...overrides,
+      });
+    }
+
+    it("対応済みにするをタップすると、resolveCallRequestを正しいcallRequestIdで呼び出し、パネルのバナーと卓マップの呼出バッジの両方が消える（本タスクの観測可能な完了条件、要件2.4）", async () => {
+      const occupied = occupiedTableWithCall();
+      mockListRegisterFeed.mockResolvedValue({ ok: true, value: [occupied] });
+      mockResolveCallRequest.mockResolvedValueOnce({
+        ok: true,
+        value: {
+          id: "call-1",
+          sessionId: "session-1",
+          status: "resolved",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      });
+
+      render(<FloorMap storeId="store-1" />);
+      fireEvent.click(await screen.findByTestId("register-floor-tile-T1"));
+
+      // 完了条件その1（対応前）: 卓マップの呼出バッジ・パネルのバナーの
+      // 両方が表示されている（同一のstate.tablesを共有していることの前提確認）。
+      expect(
+        within(screen.getByTestId("register-floor-tile-T1")).getByTestId(
+          "register-floor-tile-call-badge",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId("register-table-detail-call-banner"),
+      ).toBeInTheDocument();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "対応済みにする" }),
+      );
+
+      await waitFor(() =>
+        expect(mockResolveCallRequest).toHaveBeenCalledWith({
+          callRequestId: "call-1",
+        }),
+      );
+
+      // 完了条件その2（対応後、確認や再読み込み無しで即座に）: パネルの
+      // バナーが消える。
+      await waitFor(() =>
+        expect(
+          screen.queryByTestId("register-table-detail-call-banner"),
+        ).not.toBeInTheDocument(),
+      );
+
+      // 完了条件その3: 卓マップの呼出バッジも同時に消える（同一の
+      // state.tablesを共有しているため、ファイル冒頭の指示通り両方を
+      // 独立にアサートする）。
+      expect(
+        within(screen.getByTestId("register-floor-tile-T1")).queryByTestId(
+          "register-floor-tile-call-badge",
+        ),
+      ).not.toBeInTheDocument();
+    });
+
+    it("CALL_REQUEST_NOT_FOUND時は専用メッセージを表示し、バナー・バッジのいずれも消去しない（要件E、実際に起こりうるレース）", async () => {
+      const occupied = occupiedTableWithCall();
+      mockListRegisterFeed.mockResolvedValue({ ok: true, value: [occupied] });
+      mockResolveCallRequest.mockResolvedValueOnce({
+        ok: false,
+        error: { code: "CALL_REQUEST_NOT_FOUND" },
+      });
+
+      render(<FloorMap storeId="store-1" />);
+      fireEvent.click(await screen.findByTestId("register-floor-tile-T1"));
+      fireEvent.click(
+        screen.getByRole("button", { name: "対応済みにする" }),
+      );
+
+      expect(
+        await screen.findByTestId("register-resolve-call-error"),
+      ).toHaveTextContent("既に対応済み");
+
+      // ローカル状態は強制的に変更しない（次回ポーリングに委ねる）ため、
+      // バナー・バッジのいずれも表示され続ける。
+      expect(
+        screen.getByTestId("register-table-detail-call-banner"),
+      ).toBeInTheDocument();
+      expect(
+        within(screen.getByTestId("register-floor-tile-T1")).getByTestId(
+          "register-floor-tile-call-badge",
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it("resolveCallRequestの応答中は対応ボタンが無効化され、二重タップしてもresolveCallRequestは1回しか呼ばれない（確認モーダルが無いための二重送信防止）", async () => {
+      const occupied = occupiedTableWithCall();
+      mockListRegisterFeed.mockResolvedValue({ ok: true, value: [occupied] });
+
+      let resolveRpc!: (value: {
+        ok: true;
+        value: { id: string; sessionId: string; status: string; createdAt: string };
+      }) => void;
+      const pendingResolve = new Promise((resolve) => {
+        resolveRpc = resolve as never;
+      });
+      mockResolveCallRequest.mockReturnValueOnce(pendingResolve);
+
+      render(<FloorMap storeId="store-1" />);
+      fireEvent.click(await screen.findByTestId("register-floor-tile-T1"));
+
+      const button = screen.getByRole("button", { name: "対応済みにする" });
+      fireEvent.click(button);
+      await waitFor(() => expect(mockResolveCallRequest).toHaveBeenCalledTimes(1));
+
+      // 応答が返る前に再度タップしても、ボタンが無効化されているため
+      // 追加のRPC呼び出しは発生しない。
+      fireEvent.click(screen.getByRole("button", { name: "処理中..." }));
+      expect(mockResolveCallRequest).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        resolveRpc({
+          ok: true,
+          value: {
+            id: "call-1",
+            sessionId: "session-1",
+            status: "resolved",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(mockResolveCallRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it("呼び出し対応成功より前に開始した背景ポーリングが、成功のマージより後に解決しても、対応済みの結果を巻き戻さない（mutationSeqRefガード、6個目の適用箇所、7.6/8.2/8.3/8.4/8.5と同型の回帰テスト）", async () => {
+      vi.useFakeTimers();
+      const occupied = occupiedTableWithCall();
+      mockListRegisterFeed.mockResolvedValueOnce({ ok: true, value: [occupied] });
+
+      render(<FloorMap storeId="store-1" />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      fireEvent.click(screen.getByTestId("register-floor-tile-T1"));
+
+      // 背景ポーリングが発火し、解決を意図的に保留する（対応前の古い
+      // スナップショット: hasOpenCallRequest/openCallRequestIdが残ったまま）。
+      let resolveStalePoll!: (value: {
+        ok: true;
+        value: TableBillingSummary[];
+      }) => void;
+      const stalePoll = new Promise<{ ok: true; value: TableBillingSummary[] }>(
+        (resolve) => {
+          resolveStalePoll = resolve;
+        },
+      );
+      mockListRegisterFeed.mockReturnValueOnce(stalePoll);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(REGISTER_FLOOR_MAP_POLL_INTERVAL_MS);
+      });
+      expect(mockListRegisterFeed).toHaveBeenCalledTimes(2);
+
+      // このポーリングが解決するより前に、呼び出し対応が完了し即座に
+      // マージ（バナー・バッジの消去）される。
+      mockResolveCallRequest.mockResolvedValueOnce({
+        ok: true,
+        value: {
+          id: "call-1",
+          sessionId: "session-1",
+          status: "resolved",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      });
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "対応済みにする" }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(
+        screen.queryByTestId("register-table-detail-call-banner"),
+      ).not.toBeInTheDocument();
+      expect(
+        within(screen.getByTestId("register-floor-tile-T1")).queryByTestId(
+          "register-floor-tile-call-badge",
+        ),
+      ).not.toBeInTheDocument();
+
+      // 保留していた古いポーリング応答（対応前の呼び出し中のまま）が
+      // 今になって解決する。
+      await act(async () => {
+        resolveStalePoll({ ok: true, value: [occupied] });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // マージ結果（対応済み・バッジ無し）が古いスナップショット（呼び出し中）
+      // に巻き戻らないこと。
+      expect(
+        screen.queryByTestId("register-table-detail-call-banner"),
+      ).not.toBeInTheDocument();
+      expect(
+        within(screen.getByTestId("register-floor-tile-T1")).queryByTestId(
+          "register-floor-tile-call-badge",
+        ),
       ).not.toBeInTheDocument();
     });
   });

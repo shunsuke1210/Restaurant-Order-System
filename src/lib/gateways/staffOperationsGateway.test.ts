@@ -767,7 +767,7 @@ describe("createStaffOperationsGateway", () => {
   });
 
   describe("listRegisterFeed", () => {
-    it("list_register_feedをp_store_idで呼び出し、成功応答を配列へ整形する（activeSessionがnullの卓を含む、各明細のid/optionsSummary/status/genreを含む。タスク8.3/8.4）", async () => {
+    it("list_register_feedをp_store_idで呼び出し、成功応答を配列へ整形する（activeSessionがnullの卓を含む、各明細のid/optionsSummary/status/genre、卓のopenCallRequestIdを含む。タスク8.3/8.4/8.6）", async () => {
       rpc.mockResolvedValueOnce({
         data: [
           {
@@ -792,6 +792,7 @@ describe("createStaffOperationsGateway", () => {
             ],
             total: 1000,
             hasOpenCallRequest: true,
+            openCallRequestId: "call-1",
           },
           {
             tableId: "table-2",
@@ -800,6 +801,7 @@ describe("createStaffOperationsGateway", () => {
             items: [],
             total: 0,
             hasOpenCallRequest: false,
+            openCallRequestId: null,
           },
         ],
         error: null,
@@ -835,8 +837,10 @@ describe("createStaffOperationsGateway", () => {
         ],
         total: 1000,
         hasOpenCallRequest: true,
+        openCallRequestId: "call-1",
       });
       expect(result.value[1].activeSession).toBeNull();
+      expect(result.value[1].openCallRequestId).toBeNull();
     });
 
     it("design.mdの`never`エラー型: FORBIDDEN（P0403）でさえResultのエラーにならず例外として伝播する", async () => {

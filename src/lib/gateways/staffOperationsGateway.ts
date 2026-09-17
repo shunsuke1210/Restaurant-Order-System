@@ -243,6 +243,15 @@ export interface TableBillingSummary {
   }>;
   total: number;
   hasOpenCallRequest: boolean;
+  // タスク8.6で追加（0015_list_register_feed_open_call_request_id.sql）。
+  // resolveCallRequest({callRequestId})の呼び出しには実際のcall_requests.id
+  // が必要だが、hasOpenCallRequestは真偽値のみでその識別子を公開しない
+  // （8.2レビュー〜8.5と同型のギャップ）。要件2.3が保証する「セッションあたり
+  // openな呼び出しは高々1件」という不変条件（create_call_requestの部分
+  // ユニークインデックス）により、対象があれば単一のcall_requests.id、
+  // 無ければnullを返す。hasOpenCallRequestは後方互換のため変更せず維持する
+  // （8.1のFloorMap.tsxタイルの呼出バッジが引き続き参照する）。
+  openCallRequestId: string | null;
 }
 
 // タスク7.4で新規追加（design.mdのStaffOperationsGateway Responsibilities &
@@ -595,6 +604,8 @@ function toRegisterFeed(data: Json): ReadonlyArray<TableBillingSummary> {
     }>;
     total: number;
     hasOpenCallRequest: boolean;
+    // タスク8.6で追加。
+    openCallRequestId: string | null;
   }>;
 
   return raw.map((table) => ({
@@ -619,6 +630,7 @@ function toRegisterFeed(data: Json): ReadonlyArray<TableBillingSummary> {
     })),
     total: table.total,
     hasOpenCallRequest: table.hasOpenCallRequest,
+    openCallRequestId: table.openCallRequestId,
   }));
 }
 
