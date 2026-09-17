@@ -14,6 +14,7 @@ import { useRemoveOrderItem } from "./useRemoveOrderItem";
 import { useUpdateOrderItemStatus } from "./useUpdateOrderItemStatus";
 import { useCloseSession } from "./useCloseSession";
 import { useResolveCallRequest } from "./useResolveCallRequest";
+import { useUpdatePartySize } from "./useUpdatePartySize";
 import TableDetailPanel from "./TableDetailPanel";
 
 /**
@@ -289,6 +290,42 @@ import TableDetailPanel from "./TableDetailPanel";
  * さらされるため、必ず同じガードを適用すること」と予告していた通り）。
  * 回帰テストは`FloorMap.test.tsx`に「呼び出し対応成功より前に開始した
  * 背景ポーリングが...」を追加した（7.6/8.2/8.3/8.4/8.5の回帰テストと同型）。
+ *
+ * ## タスク8.7での更新: 人数変更UI（確認モーダル、要件3.5）
+ * 8.2〜8.6が確立した役割分担（実際のRPC呼び出し・ローカル状態への
+ * マージはFloorMap側のフックが担い、TableDetailPanel.tsxは確認モーダル等の
+ * UI状態のみを持つ）を`updatePartySize`にもそのまま適用する
+ * （`useUpdatePartySize`、`useAddOrderItem`/`useCloseSession`と同型の
+ * 小さな共有フック）。本タスクはStaffOperationsGatewayの拡張が一切不要
+ * だった唯一の8.xタスクである（`updatePartySize`は4.1で実装済み）。
+ *
+ * ### `mergePartySize`（design decision C、8.x全体で最も単純なマージ）
+ * `updatePartySize`が返す`TableSession.partySize`をそのまま該当卓の
+ * `activeSession.partySize`へ書き写す。8.2の`mergeStartedSession`や8.5の
+ * `mergeVacatedTable`のような複数フィールドの合成・副次的な状態操作
+ * （パネルを閉じる等）が一切不要——`partySize`という単一フィールドの
+ * 単純な置き換えのみで、本タスクの観測可能な完了条件（卓マップのタイルと
+ * 卓詳細パネルの両方の人数表示が更新される）を満たす。両者はいずれも
+ * 同じ`state.tables`（本コンポーネントが保持する唯一の状態）を参照して
+ * いるため、この単一の更新で両方が同時に反映される（8.1のタイルバッジと
+ * 8.2のパネルバナーが単一の更新で同時に消えたのと同型の構造）。
+ *
+ * ### `mutationSeqRef`の適用（7つ目のローカルマージ経路）
+ * 人数変更成功時のローカルマージ（`mergePartySize`）も、既存の5秒背景
+ * ポーリング・check-in・品目追加・品目削除・ステータス変更・会計・呼び出し
+ * 対応と同一コンポーネント内で共存するため、同じ`mutationSeqRef`
+ * （インクリメント）＋`load()`内のフェッチ開始時点の値の記録・解決時の
+ * 不一致検出という競合防止をそのまま適用する（7.6/8.2/8.3/8.4/8.5/8.6
+ * Implementation Notesが「新しい局所的マージ経路はいずれも同じ競合に
+ * さらされるため、必ず同じガードを適用すること」と予告していた通り）。
+ * 回帰テストは`FloorMap.test.tsx`に「人数変更成功より前に開始した背景
+ * ポーリングが...」を追加した（7.6/8.2/8.3/8.4/8.5/8.6の回帰テストと同型）。
+ *
+ * ### エラー方針（design decisions D）
+ * `SESSION_NOT_ACTIVE`/`FORBIDDEN`のいずれも単一の汎用メッセージへ倒す
+ * （`useCloseSession.ts`のSESSION_NOT_ACTIVE専用文言とは異なり、
+ * `useAddOrderItem.ts`/`useUpdateOrderItemStatus.ts`の「分岐しない」方針を
+ * 踏襲する。`useUpdatePartySize.ts`冒頭コメント参照）。
  */
 export const REGISTER_FLOOR_MAP_POLL_INTERVAL_MS = 5000;
 
@@ -632,6 +669,38 @@ export default function FloorMap({ storeId }: FloorMapProps) {
     clearResolveCallError,
   } = useResolveCallRequest(gateway, mergeResolvedCallRequest);
 
+  /**
+   * タスク8.7で追加: `updatePartySize`成功応答（`TableSession.partySize`）を
+   * `state.tables`の該当卓の`activeSession.partySize`へマージする（ファイル
+   * 冒頭コメント「タスク8.7での更新」参照）。8.x全体で最も単純なマージ
+   * （合成するフィールドがpartySize一つのみ）。`mutationSeqRef`の
+   * インクリメントは既存の6つのマージ関数と同型のガード。
+   */
+  function mergePartySize(tableId: string, partySize: number) {
+    mutationSeqRef.current += 1;
+    setState((prev) =>
+      prev.status === "ready"
+        ? {
+            status: "ready",
+            tables: prev.tables.map((table) =>
+              table.tableId === tableId && table.activeSession
+                ? {
+                    ...table,
+                    activeSession: { ...table.activeSession, partySize },
+                  }
+                : table,
+            ),
+          }
+        : prev,
+    );
+  }
+
+  const {
+    updatePartySize,
+    updatePartySizeError,
+    clearUpdatePartySizeError,
+  } = useUpdatePartySize(gateway, mergePartySize);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -682,6 +751,7 @@ export default function FloorMap({ storeId }: FloorMapProps) {
     clearUpdateStatusError();
     clearCloseSessionError();
     clearResolveCallError();
+    clearUpdatePartySizeError();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTableId]);
 
@@ -947,6 +1017,25 @@ export default function FloorMap({ storeId }: FloorMapProps) {
           resolveCallRequestErrorMessage={
             resolveCallError && resolveCallError.tableId === selectedTable.tableId
               ? resolveCallError.message
+              : null
+          }
+          onUpdatePartySize={(partySize) => {
+            if (!selectedTable.activeSession) {
+              // 到達しないはずの防御的分岐: onUpdatePartySizeはOccupiedView
+              // （table.activeSessionが非nullのときのみ描画される）からしか
+              // 呼ばれない。
+              return Promise.resolve();
+            }
+            return updatePartySize(
+              selectedTable.tableId,
+              selectedTable.activeSession.id,
+              partySize,
+            );
+          }}
+          updatePartySizeErrorMessage={
+            updatePartySizeError &&
+            updatePartySizeError.tableId === selectedTable.tableId
+              ? updatePartySizeError.message
               : null
           }
         />

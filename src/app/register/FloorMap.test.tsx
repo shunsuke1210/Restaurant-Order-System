@@ -30,6 +30,7 @@ const mockListMenuItems = vi.fn();
 const mockUpdateOrderItemStatus = vi.fn();
 const mockCloseSession = vi.fn();
 const mockResolveCallRequest = vi.fn();
+const mockUpdatePartySize = vi.fn();
 
 vi.mock("@/lib/gateways/staffOperationsGateway", () => ({
   createStaffOperationsGateway: () => ({
@@ -43,6 +44,7 @@ vi.mock("@/lib/gateways/staffOperationsGateway", () => ({
     closeSession: (...args: unknown[]) => mockCloseSession(...args),
     resolveCallRequest: (...args: unknown[]) =>
       mockResolveCallRequest(...args),
+    updatePartySize: (...args: unknown[]) => mockUpdatePartySize(...args),
   }),
 }));
 
@@ -97,6 +99,7 @@ describe("FloorMap", () => {
     mockUpdateOrderItemStatus.mockReset();
     mockCloseSession.mockReset();
     mockResolveCallRequest.mockReset();
+    mockUpdatePartySize.mockReset();
     // タスク8.3で追加: FloorMapはマウント時に常にlistMenuItemsを呼び出す
     // ため、それを検証しないテストのための既定値（空配列）を用意する。
     mockListMenuItems.mockResolvedValue({ ok: true, value: [] });
@@ -1577,6 +1580,211 @@ describe("FloorMap", () => {
           "register-floor-tile-call-badge",
         ),
       ).not.toBeInTheDocument();
+    });
+  });
+
+  // タスク8.7: 人数変更UI（確認モーダル）。
+  // Requirements: 3.5
+  describe("人数変更（タスク8.7）", () => {
+    function occupiedTable(partySize = 4): TableBillingSummary {
+      return makeTable({
+        tableLabel: "T1",
+        activeSession: {
+          id: "session-1",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          partySize,
+        },
+      });
+    }
+
+    it("確認後にupdatePartySizeを正しい引数（sessionId・変更後の人数）で呼び出し、成功時に卓マップのタイルと卓詳細パネルの両方の人数表示が更新される（本タスクの観測可能な完了条件）", async () => {
+      const occupied = occupiedTable(4);
+      mockListRegisterFeed.mockResolvedValue({ ok: true, value: [occupied] });
+      mockUpdatePartySize.mockResolvedValueOnce({
+        ok: true,
+        value: {
+          id: "session-1",
+          tableId: occupied.tableId,
+          status: "active",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          closedAt: null,
+          partySize: 6,
+        },
+      });
+
+      render(<FloorMap storeId="store-1" />);
+      fireEvent.click(await screen.findByTestId("register-floor-tile-T1"));
+      fireEvent.click(screen.getByRole("button", { name: "人数を変更" }));
+      fireEvent.click(screen.getByRole("button", { name: "人数を増やす" }));
+      fireEvent.click(screen.getByRole("button", { name: "人数を増やす" }));
+      fireEvent.click(screen.getByRole("button", { name: "確定" }));
+      fireEvent.click(
+        screen.getByTestId("register-party-size-confirm-confirm"),
+      );
+
+      await waitFor(() =>
+        expect(mockUpdatePartySize).toHaveBeenCalledWith({
+          sessionId: "session-1",
+          partySize: 6,
+        }),
+      );
+
+      // 完了条件その1: 卓詳細パネル（開いたまま）の人数表示が更新される。
+      expect(
+        await screen.findByTestId("register-table-detail-occupancy"),
+      ).toHaveTextContent("6名");
+
+      // 完了条件その2: 卓マップのタイルの人数表示も同時に更新される
+      // （タスク文書が明記する2箇所の同時アサート、8.5/8.6の二重アサート
+      // と同型）。
+      const tile = screen.getByTestId("register-floor-tile-T1");
+      expect(
+        within(tile).getByTestId("register-floor-tile-occupancy"),
+      ).toHaveTextContent("6名");
+    });
+
+    it("ステッパーで調整後キャンセルすると、updatePartySizeが呼ばれずタイル・パネルいずれの人数表示も変化しない", async () => {
+      const occupied = occupiedTable(4);
+      mockListRegisterFeed.mockResolvedValue({ ok: true, value: [occupied] });
+
+      render(<FloorMap storeId="store-1" />);
+      fireEvent.click(await screen.findByTestId("register-floor-tile-T1"));
+      fireEvent.click(screen.getByRole("button", { name: "人数を変更" }));
+      fireEvent.click(screen.getByRole("button", { name: "人数を増やす" }));
+      fireEvent.click(screen.getByRole("button", { name: "キャンセル" }));
+
+      expect(mockUpdatePartySize).not.toHaveBeenCalled();
+      expect(
+        screen.getByTestId("register-table-detail-occupancy"),
+      ).toHaveTextContent("4名");
+      const tile = screen.getByTestId("register-floor-tile-T1");
+      expect(
+        within(tile).getByTestId("register-floor-tile-occupancy"),
+      ).toHaveTextContent("4名");
+    });
+
+    it("確認モーダルの「いいえ」を選ぶと、updatePartySizeが呼ばれず人数表示が変化しない（要件3.5）", async () => {
+      const occupied = occupiedTable(4);
+      mockListRegisterFeed.mockResolvedValue({ ok: true, value: [occupied] });
+
+      render(<FloorMap storeId="store-1" />);
+      fireEvent.click(await screen.findByTestId("register-floor-tile-T1"));
+      fireEvent.click(screen.getByRole("button", { name: "人数を変更" }));
+      fireEvent.click(screen.getByRole("button", { name: "確定" }));
+      fireEvent.click(
+        screen.getByTestId("register-party-size-confirm-cancel"),
+      );
+
+      expect(mockUpdatePartySize).not.toHaveBeenCalled();
+      expect(
+        screen.getByTestId("register-table-detail-occupancy"),
+      ).toHaveTextContent("4名");
+    });
+
+    it("SESSION_NOT_ACTIVE等の失敗時は汎用エラーメッセージを表示し、タイル・パネルいずれの人数表示も変更しない（要件D）", async () => {
+      const occupied = occupiedTable(4);
+      mockListRegisterFeed.mockResolvedValue({ ok: true, value: [occupied] });
+      mockUpdatePartySize.mockResolvedValueOnce({
+        ok: false,
+        error: { code: "SESSION_NOT_ACTIVE" },
+      });
+
+      render(<FloorMap storeId="store-1" />);
+      fireEvent.click(await screen.findByTestId("register-floor-tile-T1"));
+      fireEvent.click(screen.getByRole("button", { name: "人数を変更" }));
+      fireEvent.click(screen.getByRole("button", { name: "人数を増やす" }));
+      fireEvent.click(screen.getByRole("button", { name: "確定" }));
+      fireEvent.click(
+        screen.getByTestId("register-party-size-confirm-confirm"),
+      );
+
+      expect(
+        await screen.findByTestId("register-party-size-error"),
+      ).toHaveTextContent("人数の変更に失敗しました");
+
+      expect(
+        screen.getByTestId("register-table-detail-occupancy"),
+      ).toHaveTextContent("4名");
+      const tile = screen.getByTestId("register-floor-tile-T1");
+      expect(
+        within(tile).getByTestId("register-floor-tile-occupancy"),
+      ).toHaveTextContent("4名");
+    });
+
+    it("人数変更成功より前に開始した背景ポーリングが、成功のマージより後に解決しても、マージ結果（変更後の人数）を巻き戻さない（mutationSeqRefガード、7個目の適用箇所、7.6/8.2/8.3/8.4/8.5/8.6と同型の回帰テスト）", async () => {
+      vi.useFakeTimers();
+      const occupied = occupiedTable(4);
+      mockListRegisterFeed.mockResolvedValueOnce({ ok: true, value: [occupied] });
+
+      render(<FloorMap storeId="store-1" />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      fireEvent.click(screen.getByTestId("register-floor-tile-T1"));
+
+      // 背景ポーリングが発火し、解決を意図的に保留する（変更前の古い
+      // スナップショット: partySizeが4のまま）。
+      let resolveStalePoll!: (value: {
+        ok: true;
+        value: TableBillingSummary[];
+      }) => void;
+      const stalePoll = new Promise<{ ok: true; value: TableBillingSummary[] }>(
+        (resolve) => {
+          resolveStalePoll = resolve;
+        },
+      );
+      mockListRegisterFeed.mockReturnValueOnce(stalePoll);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(REGISTER_FLOOR_MAP_POLL_INTERVAL_MS);
+      });
+      expect(mockListRegisterFeed).toHaveBeenCalledTimes(2);
+
+      // このポーリングが解決するより前に、人数変更が完了し即座にマージされる。
+      mockUpdatePartySize.mockResolvedValueOnce({
+        ok: true,
+        value: {
+          id: "session-1",
+          tableId: occupied.tableId,
+          status: "active",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          closedAt: null,
+          partySize: 6,
+        },
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "人数を変更" }));
+      fireEvent.click(screen.getByRole("button", { name: "人数を増やす" }));
+      fireEvent.click(screen.getByRole("button", { name: "人数を増やす" }));
+      fireEvent.click(screen.getByRole("button", { name: "確定" }));
+      await act(async () => {
+        fireEvent.click(
+          screen.getByTestId("register-party-size-confirm-confirm"),
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(
+        screen.getByTestId("register-table-detail-occupancy"),
+      ).toHaveTextContent("6名");
+
+      // 保留していた古いポーリング応答（変更前のpartySize=4のまま）が
+      // 今になって解決する。
+      await act(async () => {
+        resolveStalePoll({ ok: true, value: [occupied] });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // マージ結果（6名）が古いスナップショット（4名）に巻き戻らないこと。
+      expect(
+        screen.getByTestId("register-table-detail-occupancy"),
+      ).toHaveTextContent("6名");
+      const tile = screen.getByTestId("register-floor-tile-T1");
+      expect(
+        within(tile).getByTestId("register-floor-tile-occupancy"),
+      ).toHaveTextContent("6名");
     });
   });
 });

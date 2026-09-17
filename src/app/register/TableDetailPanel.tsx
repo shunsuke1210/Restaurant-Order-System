@@ -187,6 +187,60 @@ import OptionSelectionPanel, {
  * 確立した「ドキュメント化された業務エラーはローカル状態を不変のまま
  * 次回ポーリングに委ねる」という既存方針をそのまま踏襲、`FloorMap.tsx`の
  * `mergeResolvedCallRequest`冒頭コメント参照）。
+ *
+ * ## 人数変更（タスク8.7、要件3.5）
+ * 来店中のビューの人数表示（`register-table-detail-occupancy`）の隣に
+ * 「人数を変更」ボタンを設け、押すと現在の人数（チェックイン時の既定値2
+ * ではなく`activeSession.partySize`）を初期値とするステッパー
+ * （8.2の`VacantView`の人数入力ステッパーと同じ−/＋の操作感、下限も同じ
+ * `MIN_PARTY_SIZE`＝1を再利用。design decisions F）を表示する。
+ *
+ * ### 確認モーダルを設ける（design decisions A、要件3.5 vs 3.1の非対称性）
+ * 要件3.5「レジスタッフが来店中の卓の人数を変更する操作を行う、実行前に
+ * 確認を求め、確認された場合にのみ...人数を更新する」には、要件3.1
+ * （入店操作、確認モーダル無し——`VacantView`冒頭のdesign decision C参照）
+ * には無い「実行前に確認を求め」という文言が明記されている。そのため
+ * ステッパー自体は要件3.5が求める確認そのものではなく、ステッパーの
+ * 「確定」ボタンは値を確定させるのではなく`ConfirmDialog`（8.3で確立済み、
+ * 品目追加・削除・ステータス変更・会計と同型）を開く（design decisions B。
+ * 8.3の`OptionSelectionPanel`が「調整UI自身の確定操作がそのまま要件の
+ * 確認を兼ねる」という設計だったのに対し、本タスクはタスク文書が明示的に
+ * 独立した`ConfirmDialog`層を指示するため、8.3とは異なる2段階構成を採る）。
+ * `ConfirmDialog`の「いいえ」はモーダルのみを閉じ、ステッパー自体は
+ * 開いたまま（下書きの人数もそのまま）残す——他の確認フロー（品目削除・
+ * ステータス変更）で「いいえ」が既存の背後のビュー（明細一覧）を維持する
+ * のと同型。ステッパーの「キャンセル」は`VacantView`の`cancelStartSession`
+ * と同様、`onUpdatePartySize`を一切呼び出さずステッパーを閉じるのみ。
+ *
+ * ### ステッパーを共有コンポーネントへ抽出しなかった理由（design decisions、非抽出）
+ * `VacantView`の人数入力ステッパー（8.2）とほぼ同じ−/＋の見た目
+ * （約10行）だが、共有コンポーネントへ抽出しなかった。理由: (1)
+ * 8.3の`OptionSelectionPanel`再利用（216行の非自明なchoice/toggle/counter
+ * ロジックを複製するコストが明確に高かった）とは規模が全く異なり、本件は
+ * 抽出してもコンポーネント境界を跨ぐ受け渡し（data-testid・aria-label・
+ * 下限値・呼び出し元の状態変数名）の配線コストの方が10行強のJSX複製より
+ * 大きくなる、(2) 両ステッパーは値を確定した後の遷移が異なる
+ * （`VacantView`は直接`onCheckIn`を呼ぶ1段階、本タスクは`ConfirmDialog`を
+ * 挟む2段階）ため、共有化すると呼び出し元ごとの分岐が却って複雑になる、
+ * (3) `VacantView`と`OccupiedView`は`table.activeSession`の有無で排他的に
+ * 描画されるため、aria-label（「人数を減らす」/「人数を増やす」）を
+ * そのまま再利用してもDOM上の衝突が起きない。以上により、7.6
+ * Implementation Notesの「3箇所目の重複が発生したら共通化を検討する」
+ * 方針にはまだ達しておらず（本タスクの複製は2箇所目）、小さな重複を許容
+ * する方を選んだ。
+ *
+ * ### 確認モーダルの文言（design decisions A）
+ * 「人数を${変更後の人数}名に変更しますか？」——変更後の具体的な人数を
+ * 明記する（タスク文書が要求する「対象の数を伝える」文言）。確定ボタンの
+ * ラベルは「変更する」（8.3の「追加する」/「削除する」と同じ動詞＋
+ * 「する」の命名規則）。
+ *
+ * ### エラー方針（要件D）
+ * `updatePartySizeErrorMessage`（`SESSION_NOT_ACTIVE`——他端末による
+ * 先行会計との競合で実際に起こりうるレース——を含む、`useUpdatePartySize.ts`
+ * が分岐せず単一の汎用メッセージへ倒す）は占有状況表示の直下に警告として
+ * 表示し、ローカル状態（人数表示自体）は強制的に変更しない（8.2〜8.6が
+ * 確立した既存方針をそのまま踏襲）。
  */
 
 type TableDetailPanelProps = {
@@ -221,6 +275,10 @@ type TableDetailPanelProps = {
   onResolveCallRequest: () => void;
   resolvingCallRequest: boolean;
   resolveCallRequestErrorMessage: string | null;
+  // タスク8.7で追加。確認モーダルの応答を待つため戻り値はPromise<void>
+  // （`useAddOrderItem.ts`等と同型。ファイル冒頭コメント「人数変更」参照）。
+  onUpdatePartySize: (partySize: number) => Promise<void>;
+  updatePartySizeErrorMessage: string | null;
 };
 
 // 要件3.1「人数の入力を求め」に対応する下書きの初期値・下限。上限は要件が
@@ -315,6 +373,8 @@ export default function TableDetailPanel({
   onResolveCallRequest,
   resolvingCallRequest,
   resolveCallRequestErrorMessage,
+  onUpdatePartySize,
+  updatePartySizeErrorMessage,
 }: TableDetailPanelProps) {
   const [startingSession, setStartingSession] = useState(false);
   const [partySizeDraft, setPartySizeDraft] = useState(DEFAULT_PARTY_SIZE);
@@ -386,6 +446,8 @@ export default function TableDetailPanel({
             onResolveCallRequest={onResolveCallRequest}
             resolvingCallRequest={resolvingCallRequest}
             resolveCallRequestErrorMessage={resolveCallRequestErrorMessage}
+            onUpdatePartySize={onUpdatePartySize}
+            updatePartySizeErrorMessage={updatePartySizeErrorMessage}
           />
         )}
       </div>
@@ -521,6 +583,9 @@ type OccupiedViewProps = {
   onResolveCallRequest: () => void;
   resolvingCallRequest: boolean;
   resolveCallRequestErrorMessage: string | null;
+  // タスク8.7で追加。
+  onUpdatePartySize: (partySize: number) => Promise<void>;
+  updatePartySizeErrorMessage: string | null;
 };
 
 type PendingSimpleAdd = { menuItemId: string; name: string };
@@ -559,6 +624,8 @@ function OccupiedView({
   onResolveCallRequest,
   resolvingCallRequest,
   resolveCallRequestErrorMessage,
+  onUpdatePartySize,
+  updatePartySizeErrorMessage,
 }: OccupiedViewProps) {
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [optionItem, setOptionItem] = useState<MenuItemListing | null>(null);
@@ -576,6 +643,13 @@ function OccupiedView({
   // タスク8.5で追加。
   const [closeConfirming, setCloseConfirming] = useState(false);
   const [closeSubmitting, setCloseSubmitting] = useState(false);
+  // タスク8.7で追加（要件3.5）。
+  const [partySizeEditing, setPartySizeEditing] = useState(false);
+  const [partySizeDraft, setPartySizeDraft] = useState(activeSession.partySize);
+  const [pendingPartySizeChange, setPendingPartySizeChange] = useState<
+    number | null
+  >(null);
+  const [partySizeSubmitting, setPartySizeSubmitting] = useState(false);
 
   function requestAddItem(item: MenuItemListing) {
     // 売り切れの品目は「＋」ボタン自体がdisabledのため通常到達しないが、
@@ -676,6 +750,39 @@ function OccupiedView({
     setCloseConfirming(false);
   }
 
+  // タスク8.7で追加（要件3.5）。「人数を変更」タップでステッパーを開き、
+  // 下書きの初期値は必ず`activeSession.partySize`（チェックイン時の既定値2
+  // ではなく現在の実際の値、design decisions F）とする。
+  function beginEditPartySize() {
+    setPartySizeDraft(activeSession.partySize);
+    setPartySizeEditing(true);
+  }
+
+  // ステッパーの「キャンセル」。`VacantView`の`cancelStartSession`と同型:
+  // onUpdatePartySizeを一切呼び出さずステッパーを閉じるのみ（本タスクの
+  // 観測可能な完了条件に関わる仕様）。
+  function cancelEditPartySize() {
+    setPartySizeEditing(false);
+  }
+
+  // ステッパーの「確定」。値を直接確定させず、要件3.5が求める確認モーダル
+  // （`ConfirmDialog`）を開く（ファイル冒頭コメント「人数変更」design
+  // decisions A/B参照）。
+  function requestPartySizeChange() {
+    setPendingPartySizeChange(partySizeDraft);
+  }
+
+  async function confirmPartySizeChange() {
+    if (pendingPartySizeChange === null) {
+      return;
+    }
+    setPartySizeSubmitting(true);
+    await onUpdatePartySize(pendingPartySizeChange);
+    setPartySizeSubmitting(false);
+    setPendingPartySizeChange(null);
+    setPartySizeEditing(false);
+  }
+
   const genreGroups = groupMenuItemsByGenre(menuItems);
 
   return (
@@ -708,14 +815,88 @@ function OccupiedView({
         </p>
       ) : null}
 
-      <div
-        data-testid="register-table-detail-occupancy"
-        className="text-xs text-neutral-500"
-      >
-        {activeSession.partySize}名　・　ご来店{" "}
-        {elapsedMinutes(activeSession.startedAt)}分経過
-        <span className="font-mono">session #{activeSession.id}</span>
+      <div className="flex items-center justify-between gap-2">
+        <div
+          data-testid="register-table-detail-occupancy"
+          className="text-xs text-neutral-500"
+        >
+          {activeSession.partySize}名　・　ご来店{" "}
+          {elapsedMinutes(activeSession.startedAt)}分経過
+          <span className="font-mono">session #{activeSession.id}</span>
+        </div>
+        {!partySizeEditing ? (
+          <button
+            type="button"
+            data-testid="register-party-size-edit-toggle"
+            onClick={beginEditPartySize}
+            className="shrink-0 rounded px-2 py-1 text-xs font-semibold text-neutral-700"
+          >
+            人数を変更
+          </button>
+        ) : null}
       </div>
+
+      {partySizeEditing ? (
+        <div
+          data-testid="register-party-size-edit-form"
+          className="flex flex-col gap-3 rounded-lg border border-neutral-200 p-2"
+        >
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              aria-label="人数を減らす"
+              onClick={() =>
+                setPartySizeDraft((current) =>
+                  Math.max(MIN_PARTY_SIZE, current - 1),
+                )
+              }
+              className="h-8 w-8 rounded-full border border-neutral-300 text-sm font-bold text-neutral-700"
+            >
+              −
+            </button>
+            <span
+              data-testid="register-party-size-edit-value"
+              className="min-w-[2ch] text-center text-base font-semibold tabular-nums"
+            >
+              {partySizeDraft}
+            </span>
+            <button
+              type="button"
+              aria-label="人数を増やす"
+              onClick={() => setPartySizeDraft((current) => current + 1)}
+              className="h-8 w-8 rounded-full border border-neutral-300 text-sm font-bold text-neutral-700"
+            >
+              ＋
+            </button>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={cancelEditPartySize}
+              className="flex-1 rounded-lg border border-neutral-300 px-3 py-2 text-sm font-semibold text-neutral-700"
+            >
+              キャンセル
+            </button>
+            <button
+              type="button"
+              onClick={requestPartySizeChange}
+              className="flex-1 rounded-lg bg-neutral-900 px-3 py-2 text-sm font-semibold text-white"
+            >
+              確定
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {updatePartySizeErrorMessage ? (
+        <p
+          role="alert"
+          data-testid="register-party-size-error"
+          className="text-sm text-red-600"
+        >
+          {updatePartySizeErrorMessage}
+        </p>
+      ) : null}
 
       <div
         data-testid="register-table-detail-items"
@@ -954,6 +1135,18 @@ function OccupiedView({
           submitting={closeSubmitting}
           onCancel={() => setCloseConfirming(false)}
           onConfirm={() => void confirmCloseSession()}
+        />
+      ) : null}
+
+      {pendingPartySizeChange !== null ? (
+        <ConfirmDialog
+          testId="register-party-size-confirm"
+          ariaLabel="人数変更の確認"
+          message={`人数を${pendingPartySizeChange}名に変更しますか？`}
+          confirmLabel="変更する"
+          submitting={partySizeSubmitting}
+          onCancel={() => setPendingPartySizeChange(null)}
+          onConfirm={() => void confirmPartySizeChange()}
         />
       ) : null}
     </div>

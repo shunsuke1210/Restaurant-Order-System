@@ -97,6 +97,9 @@ function renderPanel(overrides: Partial<PanelProps> = {}) {
     onResolveCallRequest: vi.fn(),
     resolvingCallRequest: false,
     resolveCallRequestErrorMessage: null,
+    // タスク8.7で追加。
+    onUpdatePartySize: vi.fn().mockResolvedValue(undefined),
+    updatePartySizeErrorMessage: null,
     ...overrides,
   };
   render(<TableDetailPanel {...props} />);
@@ -1078,6 +1081,191 @@ describe("TableDetailPanel", () => {
       expect(
         screen.getByTestId("register-checkout-error"),
       ).toHaveTextContent("既に会計処理済み");
+    });
+  });
+
+  // タスク8.7: 人数変更UI（確認モーダル）。
+  // Requirements: 3.5
+  describe("人数変更（タスク8.7、要件3.5）", () => {
+    function occupiedTable(partySize = 4) {
+      return makeTable({
+        activeSession: {
+          id: "session-1",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          partySize,
+        },
+      });
+    }
+
+    it("空席の卓には人数変更ボタンを表示しない", () => {
+      const table = makeTable({ activeSession: null });
+      renderPanel({ table });
+
+      expect(
+        screen.queryByRole("button", { name: "人数を変更" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("来店中の卓には人数変更ボタンを表示する", () => {
+      const table = occupiedTable();
+      renderPanel({ table });
+
+      expect(
+        screen.getByRole("button", { name: "人数を変更" }),
+      ).toBeInTheDocument();
+    });
+
+    it("「人数を変更」を押すと、現在の人数（チェックイン時の既定値2ではなく実際の値）を初期値とするステッパーが表示される（本タスクの観測可能な完了条件の前提）", () => {
+      const table = occupiedTable(5);
+      renderPanel({ table });
+
+      fireEvent.click(screen.getByRole("button", { name: "人数を変更" }));
+
+      expect(
+        screen.getByTestId("register-party-size-edit-value"),
+      ).toHaveTextContent("5");
+    });
+
+    it("ステッパーで人数を調整してキャンセルすると、onUpdatePartySizeは呼ばれず読み取り専用の人数表示は変化しない（8.3のキャンセル経路と同型の厳密さ）", () => {
+      const table = occupiedTable(4);
+      const onUpdatePartySize = vi.fn().mockResolvedValue(undefined);
+      renderPanel({ table, onUpdatePartySize });
+
+      fireEvent.click(screen.getByRole("button", { name: "人数を変更" }));
+      fireEvent.click(screen.getByRole("button", { name: "人数を増やす" }));
+      fireEvent.click(screen.getByRole("button", { name: "人数を増やす" }));
+      expect(
+        screen.getByTestId("register-party-size-edit-value"),
+      ).toHaveTextContent("6");
+
+      fireEvent.click(screen.getByRole("button", { name: "キャンセル" }));
+
+      expect(onUpdatePartySize).not.toHaveBeenCalled();
+      expect(
+        screen.queryByTestId("register-party-size-edit-form"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByTestId("register-table-detail-occupancy"),
+      ).toHaveTextContent("4名");
+    });
+
+    it("ステッパーの下限は1人（0人以下にはならない、8.2のcheck-inステッパーと同じ規則）", () => {
+      const table = occupiedTable(1);
+      renderPanel({ table });
+
+      fireEvent.click(screen.getByRole("button", { name: "人数を変更" }));
+      fireEvent.click(screen.getByRole("button", { name: "人数を減らす" }));
+
+      expect(
+        screen.getByTestId("register-party-size-edit-value"),
+      ).toHaveTextContent("1");
+    });
+
+    it("「確定」を押すと、変更後の人数を明記した確認モーダルが表示される", () => {
+      const table = occupiedTable(4);
+      renderPanel({ table });
+
+      fireEvent.click(screen.getByRole("button", { name: "人数を変更" }));
+      fireEvent.click(screen.getByRole("button", { name: "人数を増やす" }));
+      fireEvent.click(screen.getByRole("button", { name: "確定" }));
+
+      const modal = screen.getByTestId("register-party-size-confirm");
+      expect(modal).toHaveTextContent("5");
+    });
+
+    it("確認モーダルの「いいえ」を選ぶと、onUpdatePartySizeが呼ばれず人数表示（画面表示・propsのtable）も変化しない（要件3.5と対称の完了条件）", () => {
+      const table = occupiedTable(4);
+      const onUpdatePartySize = vi.fn().mockResolvedValue(undefined);
+      renderPanel({ table, onUpdatePartySize });
+
+      fireEvent.click(screen.getByRole("button", { name: "人数を変更" }));
+      fireEvent.click(screen.getByRole("button", { name: "人数を増やす" }));
+      fireEvent.click(screen.getByRole("button", { name: "確定" }));
+      fireEvent.click(
+        screen.getByTestId("register-party-size-confirm-cancel"),
+      );
+
+      expect(onUpdatePartySize).not.toHaveBeenCalled();
+      expect(
+        screen.queryByTestId("register-party-size-confirm"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByTestId("register-table-detail-occupancy"),
+      ).toHaveTextContent("4名");
+      // 元のtableオブジェクト自体（親から渡されたデータ）も不変。
+      expect(table.activeSession?.partySize).toBe(4);
+    });
+
+    it("確認モーダルで確認すると、onUpdatePartySizeを変更後の人数で呼び出す（本タスクの観測可能な完了条件の呼び出し側検証）", () => {
+      const table = occupiedTable(4);
+      const onUpdatePartySize = vi.fn().mockResolvedValue(undefined);
+      renderPanel({ table, onUpdatePartySize });
+
+      fireEvent.click(screen.getByRole("button", { name: "人数を変更" }));
+      fireEvent.click(screen.getByRole("button", { name: "人数を増やす" }));
+      fireEvent.click(screen.getByRole("button", { name: "確定" }));
+      fireEvent.click(
+        screen.getByTestId("register-party-size-confirm-confirm"),
+      );
+
+      expect(onUpdatePartySize).toHaveBeenCalledTimes(1);
+      expect(onUpdatePartySize).toHaveBeenCalledWith(5);
+    });
+
+    it("人数変更確定中はモーダルのボタンが無効化され、応答が返るとステッパー・モーダルともに閉じる", async () => {
+      const table = occupiedTable(4);
+      let resolveUpdate!: () => void;
+      const onUpdatePartySize = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveUpdate = resolve;
+          }),
+      );
+      renderPanel({ table, onUpdatePartySize });
+
+      fireEvent.click(screen.getByRole("button", { name: "人数を変更" }));
+      fireEvent.click(screen.getByRole("button", { name: "確定" }));
+      fireEvent.click(
+        screen.getByTestId("register-party-size-confirm-confirm"),
+      );
+
+      expect(
+        screen.getByTestId("register-party-size-confirm-confirm"),
+      ).toBeDisabled();
+      expect(
+        screen.getByTestId("register-party-size-confirm-cancel"),
+      ).toBeDisabled();
+
+      resolveUpdate();
+      await screen.findByTestId("register-table-detail-panel");
+      expect(
+        screen.queryByTestId("register-party-size-confirm"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByTestId("register-party-size-edit-form"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("updatePartySizeErrorMessageが指定されると警告として表示する（SESSION_NOT_ACTIVE等の汎用メッセージ、要件D）", () => {
+      const table = occupiedTable(4);
+      renderPanel({
+        table,
+        updatePartySizeErrorMessage:
+          "人数の変更に失敗しました。もう一度お試しください。",
+      });
+
+      expect(
+        screen.getByTestId("register-party-size-error"),
+      ).toHaveTextContent("人数の変更に失敗しました");
+    });
+
+    it("updatePartySizeErrorMessageがnullの場合、人数変更のエラー表示をしない", () => {
+      const table = occupiedTable(4);
+      renderPanel({ table, updatePartySizeErrorMessage: null });
+
+      expect(
+        screen.queryByTestId("register-party-size-error"),
+      ).not.toBeInTheDocument();
     });
   });
 
