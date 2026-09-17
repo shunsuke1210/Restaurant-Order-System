@@ -12,6 +12,7 @@ import { useCheckIn } from "./useCheckIn";
 import { useAddOrderItem } from "./useAddOrderItem";
 import { useRemoveOrderItem } from "./useRemoveOrderItem";
 import { useUpdateOrderItemStatus } from "./useUpdateOrderItemStatus";
+import { useCloseSession } from "./useCloseSession";
 import TableDetailPanel from "./TableDetailPanel";
 
 /**
@@ -224,6 +225,34 @@ import TableDetailPanel from "./TableDetailPanel";
  * 「ユーザー操作起点の即時ローカルマージ」パターンが同じ状態スロットで
  * 共存する場合にのみ必要な対策であり、`menuItems`はマージされないため
  * 該当しない）。
+ *
+ * ## タスク8.5での更新: 会計操作（確認モーダル・セッション終了）
+ * 8.2/8.3/8.4が確立した役割分担（実際のRPC呼び出し・ローカル状態への
+ * マージはFloorMap側のフックが担い、TableDetailPanel.tsxは確認モーダル等の
+ * UI状態のみを持つ）を`closeSession`にもそのまま適用する
+ * （`useCloseSession`、他の3フックと同型）。
+ *
+ * ### `mergeVacatedTable`が「空席化」と「パネルを閉じる」の両方を行う理由
+ * 本タスクの観測可能な完了条件「会計確認後、卓詳細パネルが閉じて卓マップ
+ * 画面が表示され、対象卓が空席状態になる」は、8.2/8.3/8.4のいずれとも異なり
+ * 「パネルが閉じる」ことまでを要求する（8.2の`mergeStartedSession`・8.3の
+ * `mergeAddedItem`/`mergeRemovedItem`・8.4の`mergeUpdatedItemStatus`は
+ * いずれも成功後もパネルを開いたまま更新後の状態を表示した）。そのため
+ * `mergeVacatedTable`は、`mergeStartedSession`の鏡像変換（占有中→空席、
+ * `activeSession: null`・`items: []`・`total: 0`・
+ * `hasOpenCallRequest: false`への合成）に加えて`setSelectedTableId(null)`を
+ * 1箇所で併せて行う（`useCloseSession.ts`冒頭コメント参照）。
+ *
+ * ### `mutationSeqRef`の適用（5つ目のローカルマージ経路）
+ * 会計成功時のローカルマージ（`mergeVacatedTable`）も、既存の5秒背景
+ * ポーリング・check-in・品目追加・品目削除・ステータス変更と同一
+ * コンポーネント内で共存するため、同じ`mutationSeqRef`（インクリメント）＋
+ * `load()`内のフェッチ開始時点の値の記録・解決時の不一致検出という競合
+ * 防止をそのまま適用する（7.6/8.2/8.3/8.4 Implementation Notesが「新しい
+ * 局所的マージ経路はいずれも同じ競合にさらされるため、必ず同じガードを
+ * 適用すること」と予告していた通り）。回帰テストは`FloorMap.test.tsx`に
+ * 「会計成功より前に開始した背景ポーリングが...」を追加した（7.6/8.2/8.3/8.4
+ * の回帰テストと同型）。
  */
 export const REGISTER_FLOOR_MAP_POLL_INTERVAL_MS = 5000;
 
@@ -494,6 +523,43 @@ export default function FloorMap({ storeId }: FloorMapProps) {
     clearUpdateStatusError,
   } = useUpdateOrderItemStatus(gateway, mergeUpdatedItemStatus);
 
+  /**
+   * タスク8.5で追加: `closeSession`成功後、対象卓を空席状態
+   * （`activeSession: null`・`items: []`・`total: 0`・
+   * `hasOpenCallRequest: false`）へ合成する（`mergeStartedSession`の鏡像
+   * 変換）。加えて、本タスクの観測可能な完了条件が要求する「卓詳細パネルが
+   * 閉じる」ことを満たすため`selectedTableId`もクリアする——8.2/8.3/8.4の
+   * いずれのマージもパネルを開いたまま維持したため、この呼び出しを含む
+   * マージ関数は本タスクが初めて（ファイル冒頭コメント「タスク8.5での更新」
+   * 参照）。`mutationSeqRef`のインクリメントは既存の4つのマージ関数と
+   * 同型のガード。
+   */
+  function mergeVacatedTable(tableId: string) {
+    mutationSeqRef.current += 1;
+    setState((prev) =>
+      prev.status === "ready"
+        ? {
+            status: "ready",
+            tables: prev.tables.map((table) =>
+              table.tableId === tableId
+                ? {
+                    ...table,
+                    activeSession: null,
+                    items: [],
+                    total: 0,
+                    hasOpenCallRequest: false,
+                  }
+                : table,
+            ),
+          }
+        : prev,
+    );
+    setSelectedTableId(null);
+  }
+
+  const { closeSession, closeSessionError, clearCloseSessionError } =
+    useCloseSession(gateway, mergeVacatedTable);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -533,15 +599,16 @@ export default function FloorMap({ storeId }: FloorMapProps) {
     };
   }, [gateway, storeId]);
 
-  // タスク8.2で追加（8.3で品目追加・削除、8.4でステータス変更のエラーも
-  // 合わせてクリアするよう拡張）: 選択中の卓が切り替わる（別の卓を選ぶ／
-  // パネルを閉じる）たびに、直前の操作エラーを持ち越さない（別の卓の
+  // タスク8.2で追加（8.3で品目追加・削除、8.4でステータス変更、8.5で会計の
+  // エラーも合わせてクリアするよう拡張）: 選択中の卓が切り替わる（別の卓を
+  // 選ぶ／パネルを閉じる）たびに、直前の操作エラーを持ち越さない（別の卓の
   // パネルへ古いエラーメッセージを誤って表示することを防ぐ）。
   useEffect(() => {
     clearCheckInError();
     clearAddItemError();
     clearRemoveItemError();
     clearUpdateStatusError();
+    clearCloseSessionError();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTableId]);
 
@@ -772,6 +839,24 @@ export default function FloorMap({ storeId }: FloorMapProps) {
             updateStatusError &&
             updateStatusError.tableId === selectedTable.tableId
               ? updateStatusError.message
+              : null
+          }
+          onCloseSession={() => {
+            if (!selectedTable.activeSession) {
+              // 到達しないはずの防御的分岐: onCloseSessionはOccupiedView
+              // （table.activeSessionが非nullのときのみ描画される）からしか
+              // 呼ばれない。
+              return Promise.resolve();
+            }
+            return closeSession(
+              selectedTable.tableId,
+              selectedTable.activeSession.id,
+            );
+          }}
+          closeSessionErrorMessage={
+            closeSessionError &&
+            closeSessionError.tableId === selectedTable.tableId
+              ? closeSessionError.message
               : null
           }
         />

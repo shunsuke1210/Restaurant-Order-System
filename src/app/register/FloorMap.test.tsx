@@ -28,6 +28,7 @@ const mockAddOrderItem = vi.fn();
 const mockRemoveOrderItem = vi.fn();
 const mockListMenuItems = vi.fn();
 const mockUpdateOrderItemStatus = vi.fn();
+const mockCloseSession = vi.fn();
 
 vi.mock("@/lib/gateways/staffOperationsGateway", () => ({
   createStaffOperationsGateway: () => ({
@@ -38,6 +39,7 @@ vi.mock("@/lib/gateways/staffOperationsGateway", () => ({
     listMenuItems: (...args: unknown[]) => mockListMenuItems(...args),
     updateOrderItemStatus: (...args: unknown[]) =>
       mockUpdateOrderItemStatus(...args),
+    closeSession: (...args: unknown[]) => mockCloseSession(...args),
   }),
 }));
 
@@ -88,6 +90,7 @@ describe("FloorMap", () => {
     mockRemoveOrderItem.mockReset();
     mockListMenuItems.mockReset();
     mockUpdateOrderItemStatus.mockReset();
+    mockCloseSession.mockReset();
     // タスク8.3で追加: FloorMapはマウント時に常にlistMenuItemsを呼び出す
     // ため、それを検証しないテストのための既定値（空配列）を用意する。
     mockListMenuItems.mockResolvedValue({ ok: true, value: [] });
@@ -1153,6 +1156,196 @@ describe("FloorMap", () => {
       expect(
         screen.getByTestId("register-table-detail-item-status"),
       ).toHaveTextContent("調理中");
+    });
+  });
+
+  // タスク8.5: 会計操作（確認モーダル・セッション終了）。
+  // Requirements: 3.3
+  describe("会計操作（タスク8.5）", () => {
+    it("会計確認後、closeSessionを正しいsessionIdで呼び出し、卓詳細パネルが閉じて対象卓が空席状態になる（本タスクの観測可能な完了条件）", async () => {
+      const occupied = makeTable({
+        tableLabel: "T1",
+        activeSession: {
+          id: "session-1",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          partySize: 2,
+        },
+        items: [makeBillingItem({ name: "唐揚げ", unitPrice: 600 })],
+        total: 600,
+      });
+      mockListRegisterFeed.mockResolvedValue({ ok: true, value: [occupied] });
+      mockCloseSession.mockResolvedValueOnce({
+        ok: true,
+        value: {
+          id: "session-1",
+          tableId: occupied.tableId,
+          status: "closed",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          closedAt: "2026-01-01T01:00:00.000Z",
+          partySize: 2,
+        },
+      });
+
+      render(<FloorMap storeId="store-1" />);
+      fireEvent.click(await screen.findByTestId("register-floor-tile-T1"));
+      fireEvent.click(screen.getByRole("button", { name: "会計（退店）" }));
+      fireEvent.click(screen.getByTestId("register-checkout-confirm-confirm"));
+
+      await waitFor(() =>
+        expect(mockCloseSession).toHaveBeenCalledWith({
+          sessionId: "session-1",
+        }),
+      );
+
+      // 完了条件その1: 卓詳細パネルが閉じて卓マップ画面が表示される。
+      expect(
+        await screen.findByTestId("register-floor-map"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId("register-table-detail-panel"),
+      ).not.toBeInTheDocument();
+
+      // 完了条件その2: 対象卓が空席状態になる（タイルレベルで検証、
+      // 8.2の観測可能な完了条件テストと同型）。
+      const tile = screen.getByTestId("register-floor-tile-T1");
+      expect(
+        within(tile).getByTestId("register-floor-tile-vacant"),
+      ).toBeInTheDocument();
+      expect(
+        within(tile).queryByTestId("register-floor-tile-occupancy"),
+      ).not.toBeInTheDocument();
+      expect(
+        within(tile).queryByTestId("register-floor-tile-total"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("SESSION_NOT_ACTIVEエラー時は汎用の警告文を表示し、パネルは開いたまま卓は来店中のまま変化しない（要件E）", async () => {
+      const occupied = makeTable({
+        tableLabel: "T1",
+        activeSession: {
+          id: "session-1",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          partySize: 2,
+        },
+        items: [],
+        total: 0,
+      });
+      mockListRegisterFeed.mockResolvedValue({ ok: true, value: [occupied] });
+      mockCloseSession.mockResolvedValueOnce({
+        ok: false,
+        error: { code: "SESSION_NOT_ACTIVE" },
+      });
+
+      render(<FloorMap storeId="store-1" />);
+      fireEvent.click(await screen.findByTestId("register-floor-tile-T1"));
+      fireEvent.click(screen.getByRole("button", { name: "会計（退店）" }));
+      fireEvent.click(screen.getByTestId("register-checkout-confirm-confirm"));
+
+      expect(await screen.findByTestId("register-checkout-error")).toBeInTheDocument();
+
+      // パネルは開いたままで、卓はローカル状態では来店中のまま
+      // （強制的に空席へ書き換えない、次回ポーリングに委ねる）。
+      expect(
+        screen.getByTestId("register-table-detail-panel"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId("register-table-detail-occupancy"),
+      ).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "閉じる" }));
+      const tile = screen.getByTestId("register-floor-tile-T1");
+      expect(
+        within(tile).getByTestId("register-floor-tile-occupancy"),
+      ).toBeInTheDocument();
+      expect(
+        within(tile).queryByTestId("register-floor-tile-vacant"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("会計成功より前に開始した背景ポーリングが、成功のマージより後に解決しても、空席化した結果を巻き戻さない（mutationSeqRefガード、5個目の適用箇所、7.6/8.2/8.3/8.4と同型の回帰テスト）", async () => {
+      vi.useFakeTimers();
+      const occupied = makeTable({
+        tableLabel: "T1",
+        activeSession: {
+          id: "session-1",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          partySize: 2,
+        },
+        items: [],
+        total: 0,
+      });
+      mockListRegisterFeed.mockResolvedValueOnce({ ok: true, value: [occupied] });
+
+      render(<FloorMap storeId="store-1" />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      fireEvent.click(screen.getByTestId("register-floor-tile-T1"));
+
+      // 背景ポーリングが発火し、解決を意図的に保留する（会計前の古い
+      // スナップショット: activeSessionが残ったまま来店中）。
+      let resolveStalePoll!: (value: {
+        ok: true;
+        value: TableBillingSummary[];
+      }) => void;
+      const stalePoll = new Promise<{ ok: true; value: TableBillingSummary[] }>(
+        (resolve) => {
+          resolveStalePoll = resolve;
+        },
+      );
+      mockListRegisterFeed.mockReturnValueOnce(stalePoll);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(REGISTER_FLOOR_MAP_POLL_INTERVAL_MS);
+      });
+      expect(mockListRegisterFeed).toHaveBeenCalledTimes(2);
+
+      // このポーリングが解決するより前に、会計（closeSession）が完了し
+      // 即座にマージ（空席化＋パネルを閉じる）される。
+      mockCloseSession.mockResolvedValueOnce({
+        ok: true,
+        value: {
+          id: "session-1",
+          tableId: occupied.tableId,
+          status: "closed",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          closedAt: "2026-01-01T01:00:00.000Z",
+          partySize: 2,
+        },
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "会計（退店）" }));
+      await act(async () => {
+        fireEvent.click(
+          screen.getByTestId("register-checkout-confirm-confirm"),
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(
+        screen.queryByTestId("register-table-detail-panel"),
+      ).not.toBeInTheDocument();
+      expect(
+        within(screen.getByTestId("register-floor-tile-T1")).getByTestId(
+          "register-floor-tile-vacant",
+        ),
+      ).toBeInTheDocument();
+
+      // 保留していた古いポーリング応答（会計前の来店中のまま）が
+      // 今になって解決する。
+      await act(async () => {
+        resolveStalePoll({ ok: true, value: [occupied] });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // マージ結果（空席）が古いスナップショット（来店中）に巻き戻らないこと。
+      const tile = screen.getByTestId("register-floor-tile-T1");
+      expect(within(tile).getByTestId("register-floor-tile-vacant")).toBeInTheDocument();
+      expect(
+        within(tile).queryByTestId("register-floor-tile-occupancy"),
+      ).not.toBeInTheDocument();
     });
   });
 });

@@ -134,6 +134,20 @@ import OptionSelectionPanel, {
  * `onUpdateItemStatus(orderItemId, nextStatus)`を呼び出す。「いいえ」は
  * 呼び出さずモーダルを閉じるのみ（削除確認（8.3）と対称的な完了条件、
  * tasks.md「Design decisions A」参照）。
+ *
+ * ## 会計操作（タスク8.5、要件3.3）
+ * 「会計（退店）」ボタン（来店中のビューにのみ表示。空席時は会計対象が
+ * 無いため表示しない）→`ConfirmDialog`（タスク文書が指定する文言そのまま
+ * 「お会計完了でよろしいですか？完了するとQRコード情報がリセットされます」、
+ * mock-preview.htmlの`requestCloseSession`を参照）→確認すると
+ * `onCloseSession()`を呼び出す。「いいえ」は呼び出さずモーダルを閉じる
+ * のみ（品目削除・ステータス変更確認と対称的な完了条件）。
+ *
+ * `onAddItem`/`onRemoveItem`/`onUpdateItemStatus`と異なり、`onCloseSession`
+ * の成功はFloorMap.tsx側で`selectedTableId`をクリアする（design decisions
+ * B参照）。確認処理関数（`confirmCloseSession`）は8.2/8.3/8.4の各確認処理と
+ * 同型に、await完了後に無条件で自身のローカルstate
+ * （`closeSubmitting`/`closeConfirming`）を更新する。
  */
 
 type TableDetailPanelProps = {
@@ -159,6 +173,9 @@ type TableDetailPanelProps = {
     status: OrderItemStatus,
   ) => Promise<void>;
   updateStatusErrorMessage: string | null;
+  // タスク8.5で追加。
+  onCloseSession: () => Promise<void>;
+  closeSessionErrorMessage: string | null;
 };
 
 // 要件3.1「人数の入力を求め」に対応する下書きの初期値・下限。上限は要件が
@@ -248,6 +265,8 @@ export default function TableDetailPanel({
   removeItemErrorMessage,
   onUpdateItemStatus,
   updateStatusErrorMessage,
+  onCloseSession,
+  closeSessionErrorMessage,
 }: TableDetailPanelProps) {
   const [startingSession, setStartingSession] = useState(false);
   const [partySizeDraft, setPartySizeDraft] = useState(DEFAULT_PARTY_SIZE);
@@ -314,6 +333,8 @@ export default function TableDetailPanel({
             removeItemErrorMessage={removeItemErrorMessage}
             onUpdateItemStatus={onUpdateItemStatus}
             updateStatusErrorMessage={updateStatusErrorMessage}
+            onCloseSession={onCloseSession}
+            closeSessionErrorMessage={closeSessionErrorMessage}
           />
         )}
       </div>
@@ -442,6 +463,9 @@ type OccupiedViewProps = {
     status: OrderItemStatus,
   ) => Promise<void>;
   updateStatusErrorMessage: string | null;
+  // タスク8.5で追加。
+  onCloseSession: () => Promise<void>;
+  closeSessionErrorMessage: string | null;
 };
 
 type PendingSimpleAdd = { menuItemId: string; name: string };
@@ -454,9 +478,15 @@ type PendingStatusChange = {
   nextStatusLabel: string;
 };
 
+// タスク8.5で追加。タスク文書が明記する確認モーダルの文言そのまま
+// （言い換えない）。mock-preview.htmlの`requestCloseSession`と同じ操作の
+// 確認だが、文言自体はタスク文書の指定が優先される。
+const CHECKOUT_CONFIRM_MESSAGE =
+  "お会計完了でよろしいですか？完了するとQRコード情報がリセットされます";
+
 /**
- * 来店中のビュー（要件5.1, 5.5, 5.6, 5.7）。品目の追加・削除・ステータス
- * 変更を扱う（会計・呼び出し対応は8.5/8.6のスコープのため引き続き対象外）。
+ * 来店中のビュー（要件5.1, 5.5, 5.6, 5.7, 3.3）。品目の追加・削除・ステータス
+ * 変更・会計操作を扱う（呼び出し対応は8.6のスコープのため引き続き対象外）。
  */
 function OccupiedView({
   table,
@@ -469,6 +499,8 @@ function OccupiedView({
   removeItemErrorMessage,
   onUpdateItemStatus,
   updateStatusErrorMessage,
+  onCloseSession,
+  closeSessionErrorMessage,
 }: OccupiedViewProps) {
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [optionItem, setOptionItem] = useState<MenuItemListing | null>(null);
@@ -483,6 +515,9 @@ function OccupiedView({
   const [pendingStatusChange, setPendingStatusChange] =
     useState<PendingStatusChange | null>(null);
   const [statusChangeSubmitting, setStatusChangeSubmitting] = useState(false);
+  // タスク8.5で追加。
+  const [closeConfirming, setCloseConfirming] = useState(false);
+  const [closeSubmitting, setCloseSubmitting] = useState(false);
 
   function requestAddItem(item: MenuItemListing) {
     // 売り切れの品目は「＋」ボタン自体がdisabledのため通常到達しないが、
@@ -569,6 +604,18 @@ function OccupiedView({
     );
     setStatusChangeSubmitting(false);
     setPendingStatusChange(null);
+  }
+
+  // タスク8.5で追加（要件3.3）。
+  function requestCloseSession() {
+    setCloseConfirming(true);
+  }
+
+  async function confirmCloseSession() {
+    setCloseSubmitting(true);
+    await onCloseSession();
+    setCloseSubmitting(false);
+    setCloseConfirming(false);
   }
 
   const genreGroups = groupMenuItemsByGenre(menuItems);
@@ -759,6 +806,25 @@ function OccupiedView({
         </div>
       ) : null}
 
+      {closeSessionErrorMessage ? (
+        <p
+          role="alert"
+          data-testid="register-checkout-error"
+          className="text-sm text-red-600"
+        >
+          {closeSessionErrorMessage}
+        </p>
+      ) : null}
+
+      <button
+        type="button"
+        data-testid="register-checkout-button"
+        onClick={requestCloseSession}
+        className="rounded-lg bg-red-600 px-3 py-2 text-sm font-semibold text-white"
+      >
+        会計（退店）
+      </button>
+
       {optionItem ? (
         <OptionSelectionPanel
           item={optionItem}
@@ -800,6 +866,18 @@ function OccupiedView({
           submitting={removeSubmitting}
           onCancel={() => setPendingRemoval(null)}
           onConfirm={() => void confirmPendingRemoval()}
+        />
+      ) : null}
+
+      {closeConfirming ? (
+        <ConfirmDialog
+          testId="register-checkout-confirm"
+          ariaLabel="会計の確認"
+          message={CHECKOUT_CONFIRM_MESSAGE}
+          confirmLabel="お会計完了"
+          submitting={closeSubmitting}
+          onCancel={() => setCloseConfirming(false)}
+          onConfirm={() => void confirmCloseSession()}
         />
       ) : null}
     </div>

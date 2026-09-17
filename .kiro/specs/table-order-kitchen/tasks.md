@@ -219,7 +219,7 @@
   - _Requirements: 5.7_
   - _Depends: 8.2_
 
-- [ ] 8.5 会計操作（確認モーダル・セッション終了）
+- [x] 8.5 会計操作（確認モーダル・セッション終了）
   - 「お会計完了でよろしいですか？完了するとQRコード情報がリセットされます」の確認モーダルと、確認後のセッション終了・卓マップ表示への遷移を実装する
   - 観測可能な完了条件: 会計確認後、卓詳細パネルが閉じて卓マップ画面が表示され、対象卓が空席状態になる
   - _Requirements: 3.3_
@@ -327,3 +327,11 @@
   - **エラー方針（要件E）**: `INVALID_TRANSITION`（他端末との競合、実際に起こりうるレース）は`useAdvanceOrderItemStatus.ts`（KitchenBoard、7.5）と同型の汎用メッセージ表示＋ローカル状態不変とした（要件5.7がコード別の個別文言分岐を求めないため）。`ORDER_ITEM_NOT_FOUND`/`FORBIDDEN`も同じ汎用メッセージへ倒す（`useAddOrderItem.ts`/`useRemoveOrderItem.ts`と同じ考え方）。
   - **`useAdvanceOrderItemStatus.ts`を再利用しない判断**: KitchenBoard版は確認モーダル無し前提でクリック直後に即座にRPCを呼ぶ設計であり、レジ側は確認モーダルの応答待ちのため`Promise<void>`を返す契約が必要——両者は名前は似るが契約が異なるため、`useAddOrderItem.ts`/`useRemoveOrderItem.ts`と同型の新規フック`useUpdateOrderItemStatus.ts`として実装した（タスク文書が明示的に指示した設計判断）。
   - **実ブラウザ検証**: 使い捨てのPlaywrightスペック（`e2e/register-status-change.manual-verification.spec.ts`、検証後に削除しリポジトリには残していない）で、レジデバイスの実プロビジョニング→T1への入店→food/drink品目の投入→(a) foodジャンルの品目が未対応→調理中→調理完了と2段階で進み、各段階でDB直接問い合わせにより`order_items.status`のサーバー側永続化を確認、(b) drinkジャンルの品目が未対応→対応済みの1段階（in_progressを経由しない）で進むこと、(c) 確認モーダルの「いいえ」でステータス表示・DB上のstatusのいずれも変化しないこと、をローカルSupabaseスタックに対して確認した（ippinジャンルはfoodと同一の遷移ロジックのため実ブラウザでは未検証だが、`orderItemStatusTransitions.test.ts`のテーブル駆動テストで網羅済み）。検証後、作成したセッション・デバイス・menu_itemsはテストのafterAllで削除し、DB上に残留が無いことをクエリで確認した。
+- 8.5で確立: 会計操作（確認モーダル・セッション終了）を実装した。`closeSession`は既存のRPC/TypeScriptラッパー（4.1/4.6）をそのまま利用し、新しいマイグレーション・型拡張は不要だった（タスク文書の予告通り）。
+  - **確認モーダルの文言（要件3.3）**: タスク文書が指定する文言そのまま「お会計完了でよろしいですか？完了するとQRコード情報がリセットされます」を`TableDetailPanel.tsx`の`CHECKOUT_CONFIRM_MESSAGE`として1箇所に定義し、言い換えていない（mock-preview.htmlの`requestCloseSession`は同内容を`\n`で2行に分けているが、タスク文書の指定文字列自体には改行が無いため、そのまま単一文字列として使用した）。確認ボタンのラベルは「お会計完了」（mock-preview.htmlの`confirmLabel`と一致）。ボタン自体は「会計（退店）」ボタンとしてOccupiedView（来店中のビュー）にのみ表示し、空席時は表示しない。
+  - **空席状態への合成（design decision、8.2の鏡像変換）**: `mergeStartedSession`（8.2、占有中への合成: `items:[]`・`total:0`・`hasOpenCallRequest:false`）の逆方向として、`FloorMap.tsx`の`mergeVacatedTable`は`closeSession`成功後に対象卓を`activeSession:null`・`items:[]`・`total:0`・`hasOpenCallRequest:false`へ合成する。安全性の理由も対称的（タスク文書が明記する通り、アクティブセッションが無い卓は現在の占有表示という観点では注文・呼び出しを持ちえない——閉じたセッション自体の過去の注文はDBに残り続け、要件4.3の履歴保持とは独立）。
+  - **本タスクが8.2/8.3/8.4と異なる点（パネルを閉じる）**: 8.2/8.3/8.4のマージ関数（`mergeStartedSession`/`mergeAddedItem`/`mergeRemovedItem`/`mergeUpdatedItemStatus`）はいずれも成功後もパネルを開いたまま更新後の状態を表示したが、本タスクの観測可能な完了条件「卓詳細パネルが閉じて卓マップ画面が表示され、対象卓が空席状態になる」はパネルを閉じることそのものを要求する。そのため`mergeVacatedTable`は`state.tables`の空席化に加えて`setSelectedTableId(null)`を1箇所で併せて行う唯一のマージ関数とした（`useCloseSession.ts`/`FloorMap.tsx`冒頭コメント参照）。
+  - **`mutationSeqRef`の適用（5つ目のローカルマージ経路）**: 会計成功時のローカルマージ（`mergeVacatedTable`）も、既存の背景ポーリング・check-in（8.2）・品目追加/削除（8.3）・ステータス変更（8.4）と同一コンポーネント内で共存するため、7.6が確立した`mutationSeqRef`ガードをそのまま適用した。回帰テストは`FloorMap.test.tsx`に「会計成功より前に開始した背景ポーリングが...」を追加した（7.6/8.2/8.3/8.4の回帰テストと同型）。
+  - **`SESSION_NOT_ACTIVE`（要件E、実際に起こりうるレース）**: 別のレジ端末や二重操作による同一セッションへの先行会計というレースで実際に起こりうるため、`useCheckIn.ts`のSESSION_ALREADY_ACTIVEと同型の専用メッセージ（「このセッションは既に会計処理済みです。卓マップの表示をご確認ください。」）を表示し、`mergeVacatedTable`を呼び出さない（ローカル状態を強制的に空席へ書き換えたりパネルを強制的に閉じたりしない、次回の背景ポーリングに委ねる）。`FORBIDDEN`は`register`ロール限定という前提により防御的にしか到達せず、共有の汎用メッセージへ倒した（`useAddOrderItem.ts`等と同じ考え方）。
+  - **新規フック`useCloseSession.ts`**: `useAddOrderItem.ts`/`useRemoveOrderItem.ts`/`useUpdateOrderItemStatus.ts`と同型（呼び出し関数・エラーメッセージ・クリア関数を返す、確認済みの呼び出しのみを受け取り例外を再送出しない`Promise<void>`）で実装した。`useUpdateOrderItemStatus.ts`冒頭コメントが検討したのと同じ理由（確認モーダルの応答待ちという契約）でKitchenBoard側のフックとは共有しない。
+  - **実ブラウザ検証**: 使い捨てのPlaywrightスペック（`e2e/register-checkout.manual-verification.spec.ts`、検証後に削除しリポジトリには残していない）で、レジデバイスの実プロビジョニング→T1への入店（人数3）→food品目1件の追加→(a) 会計（退店）確認モーダルの「いいえ」でパネルが開いたまま・DB上のセッションが引き続き`active`であることを確認、(b) 同モーダルでタスク文書の指定文言がそのまま表示されることを確認、(c) 「お会計完了」確定でパネルが閉じ卓マップのT1タイルが「空席」表示になること、(d) DB直接問い合わせで当該セッションの`status`が`closed`・`closed_at`が設定済みであることを確認した。検証後、作成したセッション（`closed`へ更新）・デバイス・menu_itemsは削除し、DB上に残留が無いことをクエリで確認した（初回実行時にafterAllのクリーンアップ順序の不備でFK違反が出たため、`order_items`を先に削除してから`menu_items`を削除する順序に修正し、再実行で解消を確認した）。

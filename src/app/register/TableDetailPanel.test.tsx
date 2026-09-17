@@ -88,6 +88,9 @@ function renderPanel(overrides: Partial<PanelProps> = {}) {
     removeItemErrorMessage: null,
     onUpdateItemStatus: vi.fn().mockResolvedValue(undefined),
     updateStatusErrorMessage: null,
+    // タスク8.5で追加。
+    onCloseSession: vi.fn().mockResolvedValue(undefined),
+    closeSessionErrorMessage: null,
     ...overrides,
   };
   render(<TableDetailPanel {...props} />);
@@ -866,6 +869,128 @@ describe("TableDetailPanel", () => {
       expect(
         screen.getByTestId("register-update-status-error"),
       ).toHaveTextContent("ステータスの更新に失敗しました");
+    });
+  });
+
+  // タスク8.5: 会計操作（確認モーダル・セッション終了）。
+  // Requirements: 3.3
+  describe("会計操作（タスク8.5、要件3.3）", () => {
+    function occupiedTable(overrides: Partial<TableBillingSummary> = {}) {
+      return makeTable({
+        activeSession: {
+          id: "session-checkout-1",
+          startedAt: "2026-01-01T00:00:00.000Z",
+          partySize: 2,
+        },
+        items: [],
+        total: 0,
+        ...overrides,
+      });
+    }
+
+    const CHECKOUT_CONFIRM_MESSAGE =
+      "お会計完了でよろしいですか？完了するとQRコード情報がリセットされます";
+
+    it("空席の卓には会計（退店）ボタンを表示しない", () => {
+      const table = makeTable({ activeSession: null });
+      renderPanel({ table });
+
+      expect(
+        screen.queryByRole("button", { name: "会計（退店）" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("来店中の卓には会計（退店）ボタンを表示する", () => {
+      const table = occupiedTable();
+      renderPanel({ table });
+
+      expect(
+        screen.getByRole("button", { name: "会計（退店）" }),
+      ).toBeInTheDocument();
+    });
+
+    it("会計（退店）を押すと、タスク文書に明記された文言そのままの確認モーダルが表示される", () => {
+      const table = occupiedTable();
+      renderPanel({ table });
+
+      fireEvent.click(screen.getByRole("button", { name: "会計（退店）" }));
+
+      const modal = screen.getByTestId("register-checkout-confirm");
+      expect(modal).toHaveTextContent(CHECKOUT_CONFIRM_MESSAGE);
+    });
+
+    it("確認モーダルの「いいえ」を選ぶと、onCloseSessionが呼ばれず、パネルは開いたまま卓は来店中のまま変化しない（本タスクの観測可能な完了条件の裏面）", () => {
+      const table = occupiedTable();
+      const onCloseSession = vi.fn().mockResolvedValue(undefined);
+      renderPanel({ table, onCloseSession });
+
+      fireEvent.click(screen.getByRole("button", { name: "会計（退店）" }));
+      fireEvent.click(screen.getByTestId("register-checkout-confirm-cancel"));
+
+      expect(onCloseSession).not.toHaveBeenCalled();
+      expect(
+        screen.queryByTestId("register-checkout-confirm"),
+      ).not.toBeInTheDocument();
+      // パネル自体は開いたまま（onCloseは呼ばれない）で、卓は引き続き
+      // 来店中の表示のまま（会計対象の明細・合計欄が表示され続ける）。
+      expect(
+        screen.getByTestId("register-table-detail-panel"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByTestId("register-table-detail-occupancy"),
+      ).toBeInTheDocument();
+    });
+
+    it("確認モーダルで確認すると、onCloseSessionを呼び出す", () => {
+      const table = occupiedTable();
+      const onCloseSession = vi.fn().mockResolvedValue(undefined);
+      renderPanel({ table, onCloseSession });
+
+      fireEvent.click(screen.getByRole("button", { name: "会計（退店）" }));
+      fireEvent.click(screen.getByTestId("register-checkout-confirm-confirm"));
+
+      expect(onCloseSession).toHaveBeenCalledTimes(1);
+    });
+
+    it("会計確定中はモーダルのボタンが無効化され、応答が返ると閉じる", async () => {
+      const table = occupiedTable();
+      let resolveClose!: () => void;
+      const onCloseSession = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveClose = resolve;
+          }),
+      );
+      renderPanel({ table, onCloseSession });
+
+      fireEvent.click(screen.getByRole("button", { name: "会計（退店）" }));
+      fireEvent.click(screen.getByTestId("register-checkout-confirm-confirm"));
+
+      expect(
+        screen.getByTestId("register-checkout-confirm-confirm"),
+      ).toBeDisabled();
+      expect(
+        screen.getByTestId("register-checkout-confirm-cancel"),
+      ).toBeDisabled();
+
+      resolveClose();
+      await screen.findByTestId("register-table-detail-panel");
+      expect(
+        screen.queryByTestId("register-checkout-confirm"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("closeSessionErrorMessageが指定されると警告として表示する（SESSION_NOT_ACTIVE等の汎用メッセージ、要件E）", () => {
+      const table = occupiedTable();
+      renderPanel({
+        table,
+        closeSessionErrorMessage:
+          "このセッションは既に会計処理済みです。卓マップの表示をご確認ください。",
+      });
+
+      expect(
+        screen.getByTestId("register-checkout-error"),
+      ).toHaveTextContent("既に会計処理済み");
     });
   });
 
