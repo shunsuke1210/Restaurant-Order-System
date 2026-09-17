@@ -24,6 +24,16 @@ vi.mock("@/lib/gateways/staffOperationsGateway", () => ({
   }),
 }));
 
+// タスク9.2で追加: FloorMap.tsxが本タスクからuseRealtimeFeedを直接呼び出す
+// ようになったため、モックしないと（listRegisterFeed同様に実DBには接続
+// しないが）実際にwebsocket接続を試みてしまう（KitchenBoardScreen.test.tsx
+// が同じ理由でuseRealtimeFeedをモックしているのと同型。FloorMap自体の
+// 詳細な振る舞いはFloorMap.test.tsxが専用に検証するため、ここでは
+// 接続済み・onSyncは何もしない最小限のモックに留める）。
+vi.mock("@/lib/realtime/useRealtimeFeed", () => ({
+  useRealtimeFeed: () => ({ status: "connected" }),
+}));
+
 describe("RegisterConsoleScreen", () => {
   beforeEach(() => {
     mockEnsureDeviceSession.mockReset();

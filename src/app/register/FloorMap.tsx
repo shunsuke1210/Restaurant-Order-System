@@ -3,6 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createBrowserClient } from "@/lib/supabase/client";
 import {
+  useRealtimeFeed,
+  type RealtimeFeedSubscription,
+} from "@/lib/realtime/useRealtimeFeed";
+import {
   createStaffOperationsGateway,
   type MenuItemListing,
   type TableBillingSummary,
@@ -90,7 +94,94 @@ import TableDetailPanel from "./TableDetailPanel";
  * `useRealtimeFeed`を配線した際は、このポーリングは（KitchenBoardの
  * 7.6が選んだ判断と同様に）置き換えではなく補完される想定
  * ——見落としに対する低コストな二重の安全網として残すか、9.2着手時に
- * 再検討する。
+ * 再検討する。→ 9.2で実際に「補完」を選択した（下記「タスク9.2での更新」
+ * 参照）。ポーリング自体（間隔・実装）は本節時点から変更していない。
+ *
+ * ## タスク9.2での更新: useRealtimeFeedの配線（RegisterConsole）
+ * design.mdのRealtimeFeed Event Contract（「RegisterConsoleはorder_items/
+ * table_sessions/call_requestsの変更を購読する」）を実装する。tasks.mdの
+ * 9.2タスク文書自身の依存関係（`_Depends: 6.2, 7.5, 8.2_`、9.1やタスク5
+ * 以後の知見を含まない）が示す通り、この文言はタスク5（0008マイグレーション
+ * の`anon`除外判断の確定）より前に起草されたものであり、
+ * `CustomerOrderApp`/`MenuScreen.tsx`への配線は意図的に対象外とする
+ * （タスク6.2で確定済み・0008マイグレーション「anonへのSELECT付与を
+ * 見送った理由」で独立に再評価・却下済みのセキュリティ判断を、本タスクで
+ * 覆さない。詳細は本ファイル冒頭「更新方式についての設計判断」、
+ * および0008マイグレーション・design.mdのEvent Contractを参照）。
+ * 本タスクの実際のスコープは「KitchenBoard（7.6で完了済み・本タスクでは
+ * 一切変更しない）に対しRegisterConsoleを追いつかせる」ことに限られる。
+ *
+ * ### 配線場所について（FloorMap.tsx、RegisterConsoleScreen.tsxではない）
+ * KitchenBoardScreen.tsx（7.6）は「フード/ドリンク/売り切れの3タブが
+ * それぞれ独自に`useRealtimeFeed`を持つと、タブ切り替えでの子ボードの
+ * アンマウントのたびに接続状態インジケーターが消える」という理由で、
+ * 画面レベル（KitchenBoardScreen）へ`useRealtimeFeed`を巻き上げ、
+ * `resyncSignal`propで子ボードへ再同期シグナルを配った。RegisterConsoleは
+ * この事情に該当しない——`RegisterConsoleScreen.tsx`はデバイスゲートのみの
+ * 薄いラッパーであり、"ready"状態になった後は本コンポーネント
+ * （`FloorMap.tsx`）がアンマウントされることなく卓マップ・詳細パネルの
+ * 両方を自己完結して描画し続ける（8.1 Implementation Notes「8.1で確立」
+ * 参照）。よって画面レベルへ巻き上げる理由付け自体が存在せず、
+ * `useRealtimeFeed`は本コンポーネントに直接配線する（RegisterConsoleScreen
+ * 側の変更は一切不要）。
+ *
+ * ### `onSync`の実装について（新しい再同期機構を作らない）
+ * KitchenBoardの`onSync`は`resyncToken`という単調増加カウンタをFoodBoard/
+ * DrinkBoardへpropとして渡す方式を採ったが、これは「画面（親）と実際に
+ * フェッチする側（子ボード）が別コンポーネント」という構造上の理由による
+ * 間接的な配線である。本コンポーネントは`state.tables`のフェッチ処理
+ * （`load`関数、マウント時+5秒ポーリングのuseEffect内にローカルに存在する）
+ * を自分自身で直接持っているため、`onSync`から`load(false)`を直接呼び出す
+ * だけでよく、`resyncToken`のような中継用のstate・propは一切不要
+ * （tasks.mdタスク文書が「do not build a parallel/different resync
+ * mechanism, reuse the exact existing one」と指示する通り）。
+ *
+ * `load`自体は当初`useCallback`へ引き上げてuseRealtimeFeedのeffectから
+ * 直接呼び出す設計を検討したが、`react-hooks/set-state-in-effect`
+ * （eslint-plugin-react-hooksのESLint rule）が「useEffect本体から
+ * `useCallback`で作った関数を直接呼び出す」形を、内部でいずれ`setState`へ
+ * 到達する経路として静的に検出し、「effect内での同期的なsetState」の
+ * 疑いとして誤検知した（`load`は`await`を挟むため実際には非同期であり、
+ * このルールが問題視する「effect本体が同期的にsetStateする」パターンには
+ * 該当しないが、ルールの静的解析はそこまで踏み込まない）。8.2-8.7が
+ * 確立してきた「`load`はeffectのローカル関数のまま」という既存の形は
+ * このルールに一切引っかからないため、`load`自体の定義場所・シグネチャは
+ * 変更せず、その関数への参照だけを`loadRef`（ref）へ橋渡しし、
+ * `onSync`（effect本体の外側にあるコールバック）側は`loadRef.current`
+ * 経由で呼び出す設計にした。これにより、(a) マウント時初回フェッチ、
+ * (b) 5秒間隔の背景ポーリング、(c) onSync起点の背景フェッチ、の3つの
+ * 呼び出し元がすべて同一の`load`関数・同一の`mutationSeqRef`ガードを
+ * 共有する（8.2-8.7で確立した「新しい局所的な再取得経路は既存の
+ * mutationSeqRefガードをそのまま適用すること」という既存方針の、最も
+ * 直接的な適用——新しいガードを増やすのではなく、既存のガード付き関数の
+ * 呼び出し元を1つ増やすだけで済んだ）。
+ *
+ * ### 購読対象（3テーブルすべて）
+ * `REGISTER_REALTIME_SUBSCRIPTIONS`は`order_items`/`table_sessions`/
+ * `call_requests`の3テーブル（0008マイグレーションがregisterロールへ
+ * SELECTを許可する全テーブル。KitchenBoardは`order_items`のみ——
+ * table_sessions/call_requestsはregister限定のRLSのため購読しても
+ * 配信されない）。`event`・`filter`はいずれも指定しない（絞り込みなし。
+ * `list_register_feed`は店舗全体の卓を返すため、絞り込む理由が無い）。
+ *
+ * ### 接続状態UIを追加しない（design decision、KitchenBoardの7.6と対称的な判断）
+ * KitchenBoardScreen.tsx（7.6）は要件6.9（「サーバーとの接続が切断される、
+ * 接続が切断された旨を画面に表示し、再接続後に最新の品目一覧へ同期する」）
+ * という明示的な受入基準に基づき、接続状態インジケーター・disconnected
+ * バナー・reconnectedバナーの3点を実装した。要件5（RegisterConsoleの
+ * 要件群）には同等の受入基準が存在しない（5.3「表示中の注文明細と合計
+ * 金額を更新する」は更新そのものを求めるのみで、接続状態の可視化までは
+ * 求めない）。加えて、本specがこれまで一貫して検証済みUXリファレンスとして
+ * 扱ってきたmock-preview.htmlの`renderRegister`関数には、`renderKitchen`
+ * 関数が持つ`conn-dot`（接続状態インジケーター）に相当する要素がそもそも
+ * 存在しない（`grep`で確認済み）。以上3点（要件不在・検証済みUXリファレンス
+ * 不在・本タスクの観測可能な完了条件がタイミングのみを問う）から、
+ * RegisterConsoleには接続状態UIを追加しないと判断した。5秒ポーリングという
+ * 既存の安全網（7.6と同じ理由——`status === "connected"`はwebsocketの
+ * 生存確認に過ぎず、あらゆる見逃しイベントへの形式的な保証ではないため、
+ * 二重の安全網として維持する）は変更せずそのまま残す。将来
+ * RegisterConsole固有の接続状態表示が必要になった場合は、新しい要件として
+ * 起票した上で改めて設計すること（要件が無いまま実装を先回りしない）。
  *
  * ## タスク8.2での更新: 卓詳細パネルと入店操作（人数入力）
  * 8.1時点の本コメント「mutationSeqRefを導入しない理由」が予告していた通り、
@@ -328,6 +419,18 @@ import TableDetailPanel from "./TableDetailPanel";
  * 踏襲する。`useUpdatePartySize.ts`冒頭コメント参照）。
  */
 export const REGISTER_FLOOR_MAP_POLL_INTERVAL_MS = 5000;
+
+// タスク9.2: register-feedチャンネルの購読対象。0008マイグレーションで
+// registerロールがSELECT可能な3テーブルすべて（order_items/table_sessions/
+// call_requests、design.mdのRealtimeFeed Event Contract参照。KitchenBoardは
+// このうちorder_itemsのみを購読する——table_sessions/call_requestsは
+// registerロール限定のRLSのため、kitchenロールで購読しても配信されない）。
+const REGISTER_REALTIME_SUBSCRIPTIONS: ReadonlyArray<RealtimeFeedSubscription> =
+  [
+    { table: "order_items" },
+    { table: "table_sessions" },
+    { table: "call_requests" },
+  ];
 
 type FloorMapProps = {
   storeId: string;
@@ -755,6 +858,24 @@ export default function FloorMap({ storeId }: FloorMapProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTableId]);
 
+  // タスク9.2で追加: 下記のマウント時初回フェッチ+背景ポーリングeffectが
+  // ローカルに定義する`load`関数を、useRealtimeFeedの`onSync`からも
+  // 直接呼び出せるようにするための橋渡し（ファイル冒頭コメント
+  // 「タスク9.2での更新」の「onSyncの実装について」参照）。`load`自体は
+  // 従来通りeffect内のローカル関数のまま変更しない
+  // （`useCallback`へ引き上げてeffect外から直接呼び出す設計も検討したが、
+  // `react-hooks/set-state-in-effect`がuseEffect本体からの`useCallback`
+  // 関数の直接呼び出しを「effect内での同期的なsetState」の疑いとして
+  // 誤検知したため見送った。effect内のローカル関数呼び出しという既存の
+  // 形は静的解析上問題にならないため、その関数への参照だけをrefへ逃がし、
+  // onSync（effect本体の外側にあるコールバック）側から`loadRef.current`
+  // 経由で呼び出す）。マウント時初回フェッチ・5秒背景ポーリング・onSync
+  // 起点の背景フェッチの3つの呼び出し元が、新しい再同期機構を増やすことなく
+  // 同一の`load`関数・同一のmutationSeqRefガードを共有する。
+  const loadRef = useRef<((isInitialLoad: boolean) => Promise<void>) | null>(
+    null,
+  );
+
   // FoodBoard.tsx（7.2）が確立した既存パターン——マウント時の初回取得と
   // 背景ポーリングを、1つのuseEffect内でローカルに定義した非同期関数として
   // まとめ、`cancelled`フラグでアンマウント後のsetStateを防ぐ——をそのまま
@@ -786,25 +907,29 @@ export default function FloorMap({ storeId }: FloorMapProps) {
         }
         if (mutationSeqRef.current !== fetchSeq) {
           // タスク8.2で追加: このフェッチが開始してから解決するまでの間に
-          // checkIn()によるローカルマージが発生した——このフェッチが持つ
+          // checkIn()等によるローカルマージが発生した——このフェッチが持つ
           // スナップショットはそのマージより古い可能性がある。丸ごと
           // 上書きすると、たった今マージしたばかりの来店中の状態を空席へ
           // 巻き戻してしまう（7.6レビューで発見された競合と同型、tasks.md
           // Implementation Notes参照）。このフェッチの結果は破棄し、次回の
-          // ポーリングに委ねる（その頃にはサーバー側の実データ自体がこの
-          // マージ結果を反映済みのため、次回フェッチは安全に適用できる）。
+          // ポーリング（またはonSync起点の再取得、タスク9.2）に委ねる
+          // （その頃にはサーバー側の実データ自体がこのマージ結果を反映済み
+          // のため、次回フェッチは安全に適用できる）。
           return;
         }
         setState({ status: "ready", tables: result.value });
       } catch {
         // 初回読み込みの失敗のみ明示的なエラー表示にする。バックグラウンド
-        // ポーリングの失敗は画面を壊さないよう握りつぶす（FoodBoard.tsxと
-        // 同じ方針）。
+        // ポーリング・onSync起点の再取得の失敗は画面を壊さないよう
+        // 握りつぶす（FoodBoard.tsxと同じ方針）。
         if (!cancelled && isInitialLoad) {
           setState({ status: "error", message: GENERIC_ERROR_MESSAGE });
         }
       }
     }
+
+    // タスク9.2で追加: onSyncからも同じ`load`を呼べるようrefへ公開する。
+    loadRef.current = load;
 
     void load(true);
 
@@ -814,9 +939,34 @@ export default function FloorMap({ storeId }: FloorMapProps) {
 
     return () => {
       cancelled = true;
+      loadRef.current = null;
       clearInterval(interval);
     };
   }, [gateway, storeId]);
+
+  // タスク9.2で追加: register-feedチャンネルへ接続するSupabaseクライアント。
+  // KitchenBoardScreen.tsx（7.6）と同じDIパターン（`gateway`が内部に持つ
+  // クライアントとは別に、画面ごとに1つ生成しuseMemoで安定させる）。
+  const realtimeClient = useMemo(() => createBrowserClient(), []);
+
+  // タスク9.2: onSyncは既存の`load(false)`（上記effectがloadRef経由で
+  // 公開したもの）をそのまま呼ぶだけで、新しい再同期state（resyncToken等）は
+  // 増やさない（ファイル冒頭コメント「onSyncの実装について」参照）。
+  // マウント直後等、上記effectがまだ`loadRef.current`を設定する前に
+  // useRealtimeFeedが先にSUBSCRIBEDを報告してonSyncを呼ぶ理論上の順序も
+  // オプショナルチェイニングで安全に無視する（その場合でも、同じeffectが
+  // 直後に行うマウント時初回フェッチ`load(true)`が同じ内容を取得済みのため
+  // 実害はない）。戻り値（接続状態）は使わない——RegisterConsoleには
+  // 接続状態UIを追加しない設計判断のため（ファイル冒頭コメント
+  // 「接続状態UIを追加しない」参照）。
+  useRealtimeFeed({
+    client: realtimeClient,
+    channelName: "register-feed",
+    subscriptions: REGISTER_REALTIME_SUBSCRIPTIONS,
+    onSync: () => {
+      void loadRef.current?.(false);
+    },
+  });
 
   if (state.status === "loading") {
     return (

@@ -48,6 +48,19 @@ vi.mock("@/lib/gateways/staffOperationsGateway", () => ({
   }),
 }));
 
+// タスク9.2: RegisterConsoleへのuseRealtimeFeed配線。useRealtimeFeed
+// （タスク5で実装済み・単体テスト済み）はモックし、`status`を任意に操作し
+// `onSync`を手動で発火できるようにする（KitchenBoardScreen.test.tsxの7.6
+// ブロックと同じ「module-level vi.mock」方式）。実Supabaseクライアント
+// （FloorMap.tsx内でuseMemo経由で生成される`createBrowserClient()`）は
+// useRealtimeFeed自体をモックするため未使用となり、実際にwebsocket接続を
+// 試みることはない。
+const mockUseRealtimeFeed = vi.fn();
+
+vi.mock("@/lib/realtime/useRealtimeFeed", () => ({
+  useRealtimeFeed: (...args: unknown[]) => mockUseRealtimeFeed(...args),
+}));
+
 let idCounter = 0;
 
 function makeTable(
@@ -103,6 +116,12 @@ describe("FloorMap", () => {
     // タスク8.3で追加: FloorMapはマウント時に常にlistMenuItemsを呼び出す
     // ため、それを検証しないテストのための既定値（空配列）を用意する。
     mockListMenuItems.mockResolvedValue({ ok: true, value: [] });
+    // タスク9.2で追加: FloorMapはマウント時に常にuseRealtimeFeedを呼び出す
+    // ため、それを検証しないテストのための既定値（接続済み・onSyncは
+    // 呼び出し元へ委ねる）を用意する（KitchenBoardScreen.test.tsxの
+    // 既存の方式と同型）。
+    mockUseRealtimeFeed.mockReset();
+    mockUseRealtimeFeed.mockReturnValue({ status: "connected" });
   });
 
   afterEach(() => {
@@ -1786,5 +1805,181 @@ describe("FloorMap", () => {
         within(tile).getByTestId("register-floor-tile-occupancy"),
       ).toHaveTextContent("6名");
     });
+  });
+});
+
+// =========================================================================
+// タスク9.2: RegisterConsoleへのuseRealtimeFeed配線
+// Requirements: 1.12, 6.1, 6.9
+//
+// KitchenBoardScreen.test.tsx（タスク7.6）と同型の方式でuseRealtimeFeedを
+// モックし、`status`/`onSync`をテストから直接操作する。tasks.md 9.2
+// Implementation Notesが記録する通り、本タスクはFloorMap.tsxへ直接
+// useRealtimeFeedを配線する設計（RegisterConsoleScreen.tsxへの画面レベルの
+// 巻き上げは行わない——KitchenBoardのようなタブ切り替えによるアンマウント
+// 事情がFloorMapには無いため）を採った。また、RegisterConsoleには
+// KitchenBoardのような接続断UI（disconnectedバナー等）を追加しない設計
+// 判断（要件5にKitchenBoardの要件6.9に相当する接続状態表示の受入基準が
+// 無いこと、mock-preview.htmlのrenderRegisterに元々conn-dot相当のUIが
+// 存在しないことの両方を根拠とする）とした。そのためここで検証するのは
+// (a) 購読対象テーブル・チャンネル名が正しいこと、(b) onSyncが発火すると
+// 既存の背景再取得（load(false)、5秒ポーリングと同じ関数）が呼ばれ、
+// ローディング状態には戻らないこと、(c) 接続状態インジケーターを一切
+// 描画しないこと（design decisionの回帰確認）、(d) 8.2-8.7で確立した
+// mutationSeqRefガードが、onSync起点の再取得にもそのまま適用されること
+// （新しい/別の競合防止機構を作っていないことの回帰確認）の4点である。
+//
+// このdescribeは上のdescribe("FloorMap", ...)のbeforeEach（モックの
+// リセット・デフォルト値設定）を継承しない、独立したトップレベルの
+// 兄弟ブロックである（KitchenBoardScreen.test.tsxの7.6ブロックと同型。
+// モジュールスコープの`makeTable`/`mockListRegisterFeed`等は引き続き
+// 共有する）。
+// =========================================================================
+
+describe("FloorMapのタスク9.2: useRealtimeFeed配線", () => {
+  type CapturedRealtimeOptions = {
+    channelName: string;
+    subscriptions: ReadonlyArray<{ table: string }>;
+    onSync: () => void | Promise<void>;
+  };
+  let capturedOptions: CapturedRealtimeOptions | null;
+
+  beforeEach(() => {
+    idCounter = 0;
+    itemIdCounter = 0;
+    mockListRegisterFeed.mockReset();
+    mockListMenuItems.mockReset();
+    mockListMenuItems.mockResolvedValue({ ok: true, value: [] });
+    mockStartSession.mockReset();
+
+    capturedOptions = null;
+    mockUseRealtimeFeed.mockReset();
+    mockUseRealtimeFeed.mockImplementation(
+      (options: CapturedRealtimeOptions) => {
+        capturedOptions = options;
+        return { status: "connected" };
+      },
+    );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("register-feedチャンネル名でorder_items/table_sessions/call_requestsの3テーブルを購読する", async () => {
+    mockListRegisterFeed.mockResolvedValue({ ok: true, value: [] });
+
+    render(<FloorMap storeId="store-1" />);
+    await screen.findByTestId("register-floor-map");
+
+    // useRealtimeFeedは（他の全hooksと同様）レンダーのたびに呼ばれるため
+    // 呼び出し回数自体は固定しない（実装の再レンダー回数に結合させない）。
+    // 検証するのは、実際に渡されたオプション（チャンネル名・購読対象）が
+    // 期待通りであること。
+    expect(mockUseRealtimeFeed).toHaveBeenCalled();
+    expect(capturedOptions?.channelName).toBe("register-feed");
+    expect(capturedOptions?.subscriptions).toEqual([
+      { table: "order_items" },
+      { table: "table_sessions" },
+      { table: "call_requests" },
+    ]);
+  });
+
+  it("useRealtimeFeedのonSyncが呼ばれると、既存の背景再取得（listRegisterFeed）が再実行され、ローディング状態には戻らない", async () => {
+    mockListRegisterFeed.mockResolvedValue({ ok: true, value: [] });
+
+    render(<FloorMap storeId="store-1" />);
+    await screen.findByTestId("register-floor-map");
+    expect(mockListRegisterFeed).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await capturedOptions?.onSync();
+    });
+
+    await waitFor(() => expect(mockListRegisterFeed).toHaveBeenCalledTimes(2));
+    // 背景フェッチのため、ローディング表示に戻らずfloor-mapが表示され続ける。
+    expect(screen.getByTestId("register-floor-map")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("register-floor-map-loading"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("接続状態インジケーターを表示しない（design decision: RegisterConsoleには接続断UIを追加しない、tasks.md 9.2参照）", async () => {
+    mockListRegisterFeed.mockResolvedValue({ ok: true, value: [] });
+
+    render(<FloorMap storeId="store-1" />);
+    await screen.findByTestId("register-floor-map");
+
+    expect(screen.queryByText("リアルタイム接続中")).not.toBeInTheDocument();
+    expect(screen.queryByText("接続が切れています")).not.toBeInTheDocument();
+  });
+
+  it("onSync起点の背景再取得より前に開始したローカルマージ（check-in成功）があっても、その再取得の結果でマージ結果を巻き戻さない（mutationSeqRefガードの再利用、7.6/8.2と同型）", async () => {
+    const vacant = makeTable({ tableLabel: "T1", activeSession: null });
+    mockListRegisterFeed.mockResolvedValueOnce({ ok: true, value: [vacant] });
+
+    render(<FloorMap storeId="store-1" />);
+    await screen.findByTestId("register-floor-map");
+
+    // onSync起点の背景再取得が発火し、解決を意図的に保留する
+    // （他端末からの変更が無いままの、まだ空席の古いスナップショットを表す）。
+    let resolveOnSyncFetch!: (value: {
+      ok: true;
+      value: TableBillingSummary[];
+    }) => void;
+    const onSyncFetch = new Promise<{
+      ok: true;
+      value: TableBillingSummary[];
+    }>((resolve) => {
+      resolveOnSyncFetch = resolve;
+    });
+    mockListRegisterFeed.mockReturnValueOnce(onSyncFetch);
+
+    await act(async () => {
+      void capturedOptions?.onSync();
+    });
+    await waitFor(() => expect(mockListRegisterFeed).toHaveBeenCalledTimes(2));
+
+    // このフェッチが解決するより前に、チェックインが完了し即座にマージされる。
+    mockStartSession.mockResolvedValueOnce({
+      ok: true,
+      value: {
+        id: "session-new",
+        tableId: vacant.tableId,
+        status: "active",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        closedAt: null,
+        partySize: 2,
+      },
+    });
+    fireEvent.click(screen.getByTestId("register-floor-tile-T1"));
+    fireEvent.click(screen.getByRole("button", { name: "入店" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "入店する" }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "閉じる" }));
+
+    expect(
+      within(screen.getByTestId("register-floor-tile-T1")).getByTestId(
+        "register-floor-tile-occupancy",
+      ),
+    ).toHaveTextContent("2名");
+
+    // 保留していたonSync起点の古いフェッチ応答（空席のまま）が今になって解決する。
+    await act(async () => {
+      resolveOnSyncFetch({ ok: true, value: [vacant] });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const tile = screen.getByTestId("register-floor-tile-T1");
+    expect(
+      within(tile).queryByTestId("register-floor-tile-vacant"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(tile).getByTestId("register-floor-tile-occupancy"),
+    ).toHaveTextContent("2名");
   });
 });
