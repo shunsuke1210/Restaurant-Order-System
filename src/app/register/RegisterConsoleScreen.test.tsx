@@ -46,6 +46,14 @@ describe("RegisterConsoleScreen", () => {
     expect(
       screen.queryByTestId("register-floor-map"),
     ).not.toBeInTheDocument();
+
+    // タスク9.1: NOT_PROVISIONEDの場合のみ、/setup/registerへの実際の
+    // ナビゲーション導線（<Link>のhref）を表示する（プレーンテキストでの
+    // URL言及だけに留めない）。KitchenBoardScreenと同じ仕組みだが、
+    // href/セットアップ対象は必ず自画面のロール（register）であること。
+    expect(
+      screen.getByRole("link", { name: "セットアップ画面へ進む" }),
+    ).toHaveAttribute("href", "/setup/register");
   });
 
   it("ensureDeviceSessionが例外を投げても（ドキュメント化されていない失敗）、クラッシュせず案内メッセージを表示する", async () => {
@@ -56,6 +64,12 @@ describe("RegisterConsoleScreen", () => {
     expect(
       await screen.findByTestId("register-device-unavailable"),
     ).toBeInTheDocument();
+    // タスク9.1: 汎用デバイスエラー（ドキュメント化されていない失敗）は
+    // 本タスクのスコープ外——NOT_PROVISIONED専用のセットアップ導線を
+    // 表示しない（回帰確認）。
+    expect(
+      screen.queryByRole("link", { name: "セットアップ画面へ進む" }),
+    ).not.toBeInTheDocument();
   });
 
   it("register以外のroleでプロビジョニング済みの場合も、クラッシュせず案内メッセージを表示する", async () => {
@@ -71,6 +85,12 @@ describe("RegisterConsoleScreen", () => {
     ).toBeInTheDocument();
     expect(
       screen.queryByTestId("register-floor-map"),
+    ).not.toBeInTheDocument();
+    // タスク9.1: WRONG_ROLE（デバイスは既にプロビジョニング済みで
+    // 「未プロビジョニング」ではない）は本タスクのスコープ外——セットアップ
+    // 導線を表示しない（回帰確認）。
+    expect(
+      screen.queryByRole("link", { name: "セットアップ画面へ進む" }),
     ).not.toBeInTheDocument();
   });
 

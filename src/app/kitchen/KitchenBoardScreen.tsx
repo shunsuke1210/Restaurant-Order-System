@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { ensureDeviceSession } from "@/lib/device/useDeviceIdentity";
 import { createBrowserClient } from "@/lib/supabase/client";
 import {
@@ -147,6 +148,46 @@ import SoldOutBoard from "./SoldOutBoard";
  * がFORBIDDENで拒否するが、本タスクの時点ではまだRPC呼び出しが無いため）
  * クラッシュせず同様の案内文を表示する防御的な分岐を設ける。
  *
+ * ## タスク9.1での更新: NOT_PROVISIONED時のセットアップ導線
+ * 9.1は上記が予告していた「セットアップ画面への正式な誘導」を実装する。
+ * `NOT_PROVISIONED_MESSAGE`はプレーンテキストで`/setup/kitchen`という
+ * パスに触れているだけで、実際にクリック可能なリンクや自動遷移は
+ * 存在しなかった（観測可能な完了条件「セットアップ画面へ誘導される」＝
+ * 実際に誘導されること、であり文中でURLに言及するだけでは満たさない）。
+ *
+ * **選択: 実際の`<Link>`（自動リダイレクトではない）**。理由:
+ * (1) `/setup/kitchen`は物理的なタブレットのセットアップ作業であり、
+ * スタッフが意図して進む操作の方が、確認中の一瞬の表示から問答無用で
+ * 画面が切り替わるより安全（誤って別の未プロビジョニング状態から
+ * 一瞬だけこの分岐を経由した場合に、勝手に遷移されると混乱しうる）。
+ * (2) `useRouter`のモックやuseEffectのタイミング制御を要する自動遷移より
+ * テストが単純・堅牢（hrefの静的アサーションで足りる）。
+ * (3) design.mdのError Categories and Responses（「権限エラー
+ * （FORBIDDEN）→...`/setup/[role]`への導線を示す」）は「示す」という
+ * 表現であり、自動遷移までは要求していない。
+ * NOT_PROVISIONEDの場合のみ`ViewState`に`setupHref`（`/setup/kitchen`）を
+ * 追加し、案内文の下に`data-testid="kitchen-setup-link"`のLinkを表示する。
+ * WRONG_ROLE（デバイス自体は既にプロビジョニング済みで「未プロビジョニング」
+ * ではない）・汎用デバイスエラー（ネットワーク断等、ドキュメント化されて
+ * いない失敗）のいずれも`setupHref`を設定せず、本タスクの前から変わらない
+ * プレーンテキストのみの表示のまま据え置く
+ * （タスク文書のスコープ外指定、および7.5 Implementation Notesが確立した
+ * 「異なる操作クラス／エラー種別を混同しない」原則の踏襲）。
+ *
+ * **RegisterConsoleScreen.tsxとの共有可否について（非共有、理由を明記）**:
+ * `/register`側にも同型のLink（`/setup/register`向け）を追加するが、
+ * 共有コンポーネントへは抽出しなかった。8.2 Implementation Notesの
+ * `formatYen`（`FloorMap.tsx`がCustomerOrderApp境界のロジックを複製）、
+ * および同ノートが明言する「RegisterConsole境界からCustomerOrderApp境界
+ * への物理的なimportを避ける」という本specの確立済み方針は、KitchenBoard
+ * とRegisterConsoleの間にも同様に適用される（design.mdのComponents表で
+ * 両者は別々のBoundary Context）。本要素はLink1個・文言1行という
+ * `ConfirmDialog.tsx`（8.3、確認モーダルという独立コンポーネントの責務、
+ * 同一境界内で2箇所目の利用が生まれた時点で集約）よりさらに小さく、
+ * 境界を跨ぐ共有モジュールを新設するコスト（配置場所の意思決定、
+ * 双方からの参照経路の確立）が生む結合の方が、10行に満たないJSXの複製より
+ * 大きいと判断した。
+ *
  * ## レイアウト構造について（mock-preview.html #kitchenScreen参照）
  * mock-preview.htmlの`renderKitchen`関数・関連CSS
  * （`.screen-inner{display:flex;flex-direction:column}`、
@@ -164,8 +205,13 @@ import SoldOutBoard from "./SoldOutBoard";
 
 type ViewState =
   | { status: "checking-device" }
-  | { status: "device-unavailable"; message: string }
+  // タスク9.1: setupHreadはNOT_PROVISIONEDの場合のみ設定する（WRONG_ROLE・
+  // 汎用デバイスエラーではundefinedのまま、Linkを描画しない）。
+  | { status: "device-unavailable"; message: string; setupHref?: string }
   | { status: "ready"; storeId: string };
+
+// タスク9.1: NOT_PROVISIONED時のセットアップ導線（<Link>）の遷移先。
+const KITCHEN_SETUP_PATH = "/setup/kitchen";
 
 const NOT_PROVISIONED_MESSAGE =
   "このタブレットは厨房用デバイスとしてセットアップされていません。店舗スタッフにご確認のうえ、/setup/kitchen からセットアップしてください。";
@@ -217,6 +263,7 @@ export default function KitchenBoardScreen() {
           setView({
             status: "device-unavailable",
             message: NOT_PROVISIONED_MESSAGE,
+            setupHref: KITCHEN_SETUP_PATH,
           });
           return;
         }
@@ -339,6 +386,15 @@ export default function KitchenBoardScreen() {
         >
           {view.message}
         </p>
+        {view.setupHref ? (
+          <Link
+            href={view.setupHref}
+            data-testid="kitchen-setup-link"
+            className="text-sm font-semibold text-blue-600 underline underline-offset-2"
+          >
+            セットアップ画面へ進む
+          </Link>
+        ) : null}
       </main>
     );
   }

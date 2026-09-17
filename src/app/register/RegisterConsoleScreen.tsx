@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { ensureDeviceSession } from "@/lib/device/useDeviceIdentity";
 import FloorMap from "./FloorMap";
 
@@ -35,12 +36,29 @@ import FloorMap from "./FloorMap";
  * 確立した「本タスクの完了条件はタブ/固定ヘッダーの構造であり、セットアップ
  * 画面への自動遷移導線までは作り込まない」という段階的な充実パターンを
  * 踏襲。正式な導線はタスク9.1のスコープ）。
+ *
+ * ## タスク9.1での更新: NOT_PROVISIONED時のセットアップ導線
+ * KitchenBoardScreen.tsxと全く同型の変更を`/register`側にも適用する
+ * （設計判断・理由の詳細はKitchenBoardScreen.tsx冒頭コメント「## タスク
+ * 9.1での更新」を参照。実際の`<Link>`を選んだ理由、KitchenBoardScreen側の
+ * Linkとコンポーネントを共有しなかった理由——Boundary Contextを跨ぐ物理
+ * importを避ける本specの確立済み方針——いずれも同一）。差分はhref/文言中の
+ * パスが自画面のロール（`register`）を指す点のみ:
+ * NOT_PROVISIONEDの場合のみ`ViewState`に`setupHref`（`/setup/register`）を
+ * 設定し、案内文の下に`data-testid="register-setup-link"`のLinkを表示する。
+ * WRONG_ROLE・汎用デバイスエラーは`setupHref`を設定せず、本タスクの前から
+ * 変わらないプレーンテキストのみの表示のまま据え置く。
  */
 
 type ViewState =
   | { status: "checking-device" }
-  | { status: "device-unavailable"; message: string }
+  // タスク9.1: setupHreadはNOT_PROVISIONEDの場合のみ設定する（WRONG_ROLE・
+  // 汎用デバイスエラーではundefinedのまま、Linkを描画しない）。
+  | { status: "device-unavailable"; message: string; setupHref?: string }
   | { status: "ready"; storeId: string };
+
+// タスク9.1: NOT_PROVISIONED時のセットアップ導線（<Link>）の遷移先。
+const REGISTER_SETUP_PATH = "/setup/register";
 
 const NOT_PROVISIONED_MESSAGE =
   "このタブレットはレジ用デバイスとしてセットアップされていません。店舗スタッフにご確認のうえ、/setup/register からセットアップしてください。";
@@ -71,6 +89,7 @@ export default function RegisterConsoleScreen() {
           setView({
             status: "device-unavailable",
             message: NOT_PROVISIONED_MESSAGE,
+            setupHref: REGISTER_SETUP_PATH,
           });
           return;
         }
@@ -121,6 +140,15 @@ export default function RegisterConsoleScreen() {
         >
           {view.message}
         </p>
+        {view.setupHref ? (
+          <Link
+            href={view.setupHref}
+            data-testid="register-setup-link"
+            className="text-sm font-semibold text-blue-600 underline underline-offset-2"
+          >
+            セットアップ画面へ進む
+          </Link>
+        ) : null}
       </main>
     );
   }
