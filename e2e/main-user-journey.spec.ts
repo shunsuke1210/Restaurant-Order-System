@@ -295,19 +295,10 @@ test.describe("主要ユーザージャーニー（タスク10.4）", () => {
       ).toHaveText("3");
       await checkInForm.getByRole("button", { name: "入店する" }).click();
 
-      // 観測可能な完了条件そのもの: 入店操作で人数を入力し確定すると、
-      // パネルにその人数が表示される（8.2が確立した即時ローカルマージ、
-      // ポーリング待ちではない）。
-      const occupancyLine = registerPage.getByTestId(
-        "register-table-detail-occupancy",
-      );
-      await expect(occupancyLine).toContainText("3名");
-      const initialOccupancyText = await occupancyLine.innerText();
-      const originalSessionId = extractSessionId(initialOccupancyText);
-
-      // パネルを閉じ、卓マップのタイル自体にも人数が反映されていることを
-      // 確認する（tasks.md「タイル/パネルの両方で人数表示を確認する」）。
-      await detailPanel.getByRole("button", { name: "閉じる" }).click();
+      // spec完了後のユーザー確認で追加: 入店確定は自動的に卓詳細パネルを
+      // 閉じ卓マップへ戻す（FloorMap.tsxのmergeStartedSession冒頭コメント
+      // 参照）。観測可能な完了条件そのもの——卓マップのタイル自体に
+      // 人数が反映されていること——をタイルレベルで確認する。
       await expect(detailPanel).not.toBeVisible();
       await expect(
         floorTile.getByTestId("register-floor-tile-vacant"),
@@ -316,11 +307,19 @@ test.describe("主要ユーザージャーニー（タスク10.4）", () => {
         floorTile.getByTestId("register-floor-tile-occupancy"),
       ).toContainText("3名");
 
-      // パネルを再度開いたままにしておく（design decision D、
-      // FloorMap.tsx参照: 開いたパネルは背景ポーリング/Realtimeで自動的に
-      // 最新化されるため、以降のステップでこのパネルを再利用できる）。
+      // パネルを再度開く（design decision D、FloorMap.tsx参照: 開いた
+      // パネルは背景ポーリング/Realtimeで自動的に最新化されるため、
+      // 以降のステップでこのパネルを再利用できる）。以後のセッションID
+      // 突合はこのタイミングで読み取る（自動で閉じた直後のパネルからは
+      // 読み取れないため）。
       await floorTile.click();
       await expect(detailPanel).toBeVisible();
+      const occupancyLine = registerPage.getByTestId(
+        "register-table-detail-occupancy",
+      );
+      await expect(occupancyLine).toContainText("3名");
+      const initialOccupancyText = await occupancyLine.innerText();
+      const originalSessionId = extractSessionId(initialOccupancyText);
 
       // =======================================================================
       // 2. 厨房: デバイスプロビジョニング・Realtime購読の確立を待つ
@@ -663,6 +662,10 @@ test.describe("主要ユーザージャーニー（タスク10.4）", () => {
         .getByTestId("register-check-in-form")
         .getByRole("button", { name: "入店する" })
         .click();
+      // 入店確定は自動的にパネルを閉じるため、セッションIDを読み取るには
+      // 再度開く（上のオリジナルセッションのチェックインと同じ理由）。
+      await expect(detailPanel).not.toBeVisible();
+      await floorTile.click();
       await expect(occupancyLine).toContainText("2名");
       const newOccupancyText = await occupancyLine.innerText();
       const newSessionId = extractSessionId(newOccupancyText);

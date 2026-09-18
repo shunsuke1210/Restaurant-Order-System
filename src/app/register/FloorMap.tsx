@@ -530,6 +530,12 @@ export default function FloorMap({ storeId }: FloorMapProps) {
    * 合成する（ファイル冒頭コメント「design decision A」参照。`items: []`・
    * `total: 0`・`hasOpenCallRequest: false`は、新規発行直後のセッションが
    * まだ注文・呼び出しを一切持ちえないことに基づく安全な合成）。
+   *
+   * spec完了後のユーザー確認で追加: 入店操作を確定したら卓詳細パネルを
+   * 閉じ、卓マップへ戻る（`setSelectedTableId(null)`）。入店直後の
+   * オペレーションは「次の卓の対応に移る」ことが通常であり、品目追加等
+   * （8.3）のようにその場でパネルを操作し続ける前提がないため
+   * （8.5の`mergeVacatedTable`が会計後にパネルを閉じるのと同じ理由）。
    */
   function mergeStartedSession(
     tableId: string,
@@ -554,6 +560,7 @@ export default function FloorMap({ storeId }: FloorMapProps) {
           }
         : prev,
     );
+    setSelectedTableId(null);
   }
 
   const { checkIn, submittingTableId, checkInError, clearCheckInError } =

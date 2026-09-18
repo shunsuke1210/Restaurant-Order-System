@@ -425,9 +425,17 @@ describe("FloorMap", () => {
         }),
       );
 
-      // パネルを閉じた後もタイル自体が人数を表示すること（タイルレベルで
-      // 検証することが本タスクの観測可能な完了条件そのもの）。
-      fireEvent.click(await screen.findByRole("button", { name: "閉じる" }));
+      // spec完了後のユーザー確認で追加: 入店確定は自動的に卓詳細パネルを
+      // 閉じ卓マップへ戻す（会計操作後にパネルが閉じるのと同じ理由。
+      // FloorMap.tsxのmergeStartedSession冒頭コメント参照）——手動で
+      // 「閉じる」を押す必要はない。
+      await waitFor(() =>
+        expect(
+          screen.queryByTestId("register-table-detail-panel"),
+        ).not.toBeInTheDocument(),
+      );
+      // タイル自体が人数を表示すること（タイルレベルで検証することが
+      // 本タスクの観測可能な完了条件そのもの）。
       const tile = screen.getByTestId("register-floor-tile-T1");
       expect(
         within(tile).getByTestId("register-floor-tile-occupancy"),
@@ -603,7 +611,11 @@ describe("FloorMap", () => {
         await Promise.resolve();
       });
 
-      fireEvent.click(screen.getByRole("button", { name: "閉じる" }));
+      // spec完了後のユーザー確認で追加: 入店確定は自動的にパネルを閉じる
+      // （手動での「閉じる」クリックは不要）。
+      expect(
+        screen.queryByTestId("register-table-detail-panel"),
+      ).not.toBeInTheDocument();
       expect(
         within(screen.getByTestId("register-floor-tile-T1")).getByTestId(
           "register-floor-tile-occupancy",
@@ -1959,7 +1971,11 @@ describe("FloorMapのタスク9.2: useRealtimeFeed配線", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    fireEvent.click(screen.getByRole("button", { name: "閉じる" }));
+    // spec完了後のユーザー確認で追加: 入店確定は自動的にパネルを閉じる
+    // （手動での「閉じる」クリックは不要）。
+    expect(
+      screen.queryByTestId("register-table-detail-panel"),
+    ).not.toBeInTheDocument();
 
     expect(
       within(screen.getByTestId("register-floor-tile-T1")).getByTestId(
