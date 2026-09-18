@@ -800,9 +800,11 @@ export default function MenuScreen({ tableId }: MenuScreenProps) {
     <main className="min-h-screen bg-white pb-20">
       <div className="sticky top-0 z-10 bg-white">
         <header className="border-b border-neutral-100 px-4 py-3">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <h1 className="text-lg font-semibold">注文メニュー</h1>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex min-w-0 shrink-0 items-center gap-2">
+              <h1 className="text-lg font-semibold whitespace-nowrap">
+                注文メニュー
+              </h1>
               <span
                 data-testid="table-label"
                 className="rounded bg-neutral-100 px-2 py-0.5 text-sm text-neutral-600"
