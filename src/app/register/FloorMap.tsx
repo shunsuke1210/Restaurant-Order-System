@@ -19,6 +19,7 @@ import { useUpdateOrderItemStatus } from "./useUpdateOrderItemStatus";
 import { useCloseSession } from "./useCloseSession";
 import { useResolveCallRequest } from "./useResolveCallRequest";
 import { useUpdatePartySize } from "./useUpdatePartySize";
+import Link from "next/link";
 import TableDetailPanel from "./TableDetailPanel";
 import CallBannerStack from "./CallBannerStack";
 
@@ -1230,6 +1231,16 @@ export default function FloorMap({ storeId }: FloorMapProps) {
         />
       ) : null}
       </div>
+      {/* owner-menu-management spec（要件1.6）で追加: レジ通常モードから
+          オーナーモードへの遷移手段。入退店管理・会計確認・呼び出しバナー
+          など既存のロジックには一切手を加えていない。*/}
+      <Link
+        href="/register/owner"
+        data-testid="register-owner-mode-link"
+        className="fixed bottom-4 right-4 z-10 rounded-full bg-neutral-800 px-4 py-2 text-xs font-semibold text-white shadow-lg"
+      >
+        管理者メニューログイン
+      </Link>
     </>
   );
 }

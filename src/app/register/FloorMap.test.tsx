@@ -150,6 +150,17 @@ describe("FloorMap", () => {
     expect(within(tableSection).queryByText("C1")).not.toBeInTheDocument();
   });
 
+  it("owner-menu-management要件1.6: 画面に「管理者メニューログイン」リンクが表示され、/register/ownerへの遷移先を持つ", async () => {
+    mockListRegisterFeed.mockResolvedValue({ ok: true, value: [] });
+
+    render(<FloorMap storeId="store-1" />);
+    await screen.findByTestId("register-floor-map");
+
+    const link = screen.getByTestId("register-owner-mode-link");
+    expect(link).toHaveTextContent("管理者メニューログイン");
+    expect(link).toHaveAttribute("href", "/register/owner");
+  });
+
   it("T/Cいずれの接頭辞にも一致しないラベルの卓があってもクラッシュせず、「その他」区分に表示する", async () => {
     const weird = makeTable({ tableLabel: "VIP" });
     mockListRegisterFeed.mockResolvedValue({ ok: true, value: [weird] });
