@@ -76,6 +76,8 @@ function makeTable(
     hasOpenCallRequest: false,
     // タスク8.6で追加（0015_list_register_feed_open_call_request_id.sql）。
     openCallRequestId: null,
+    // 0017で追加（0017_list_register_feed_open_call_request_created_at.sql）。
+    openCallRequestCreatedAt: null,
     ...overrides,
   };
 }
@@ -1610,6 +1612,125 @@ describe("FloorMap", () => {
         within(screen.getByTestId("register-floor-tile-T1")).queryByTestId(
           "register-floor-tile-call-badge",
         ),
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  // spec完了後のユーザー確認で追加: スタッフ呼出しをスマホの通知のように
+  // 目立つバナーで表示し、複数卓からの呼び出しは古いものを上に積み重ねる。
+  // Requirements: 2.2, 2.4
+  describe("呼び出しバナー（スマホ通知スタイル、spec完了後のユーザー確認で追加）", () => {
+    function occupiedTableWithCall(
+      overrides: Partial<TableBillingSummary> = {},
+    ): TableBillingSummary {
+      return makeTable({
+        activeSession: {
+          id: `session-${overrides.tableLabel ?? "1"}`,
+          startedAt: "2026-01-01T00:00:00.000Z",
+          partySize: 2,
+        },
+        hasOpenCallRequest: true,
+        openCallRequestId: `call-${overrides.tableLabel ?? "1"}`,
+        openCallRequestCreatedAt: "2026-01-01T00:00:00.000Z",
+        ...overrides,
+      });
+    }
+
+    it("呼び出し中の卓が無ければバナースタック自体が描画されない", async () => {
+      mockListRegisterFeed.mockResolvedValue({
+        ok: true,
+        value: [makeTable({ tableLabel: "T1" })],
+      });
+
+      render(<FloorMap storeId="store-1" />);
+      await screen.findByTestId("register-floor-tile-T1");
+
+      expect(
+        screen.queryByTestId("register-call-banner-stack"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("呼び出し中の卓があると、卓ラベルを含むバナーがスマホ通知のように表示される", async () => {
+      const occupied = occupiedTableWithCall({ tableLabel: "T1" });
+      mockListRegisterFeed.mockResolvedValue({ ok: true, value: [occupied] });
+
+      render(<FloorMap storeId="store-1" />);
+
+      const banner = await screen.findByTestId("register-call-banner-T1");
+      expect(banner).toHaveTextContent("T1");
+      expect(
+        within(banner).getByRole("button", { name: "対応済みにする" }),
+      ).toBeInTheDocument();
+    });
+
+    it("複数卓から呼び出しがあった場合、openCallRequestCreatedAtが古い順にバナーが上から並ぶ", async () => {
+      const older = occupiedTableWithCall({
+        tableLabel: "T1",
+        openCallRequestCreatedAt: "2026-01-01T00:00:00.000Z",
+      });
+      const newer = occupiedTableWithCall({
+        tableLabel: "T2",
+        openCallRequestCreatedAt: "2026-01-01T00:05:00.000Z",
+      });
+      // わざと新しい方を先に返し、レスポンス順ではなくcreatedAtで
+      // 並べ替えていることを検証する。
+      mockListRegisterFeed.mockResolvedValue({ ok: true, value: [newer, older] });
+
+      render(<FloorMap storeId="store-1" />);
+
+      const stack = await screen.findByTestId("register-call-banner-stack");
+      await screen.findByTestId("register-call-banner-T2");
+      const banners = within(stack).getAllByRole("alert");
+      expect(banners).toHaveLength(2);
+      expect(banners[0]).toHaveAttribute(
+        "data-testid",
+        "register-call-banner-T1",
+      );
+      expect(banners[1]).toHaveAttribute(
+        "data-testid",
+        "register-call-banner-T2",
+      );
+    });
+
+    it("バナーの「対応済みにする」を押すと、resolveCallRequestを正しいcallRequestIdで呼び出し、そのバナーが消える（卓詳細パネルを開かなくても対応できる）", async () => {
+      const occupied = occupiedTableWithCall({ tableLabel: "T1" });
+      mockListRegisterFeed.mockResolvedValue({ ok: true, value: [occupied] });
+      mockResolveCallRequest.mockResolvedValueOnce({
+        ok: true,
+        value: {
+          id: "call-T1",
+          sessionId: "session-T1",
+          status: "resolved",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      });
+
+      render(<FloorMap storeId="store-1" />);
+      const banner = await screen.findByTestId("register-call-banner-T1");
+
+      // 卓詳細パネルを一切開かずにバナーから直接対応できることを確認する
+      // （パネルを開かないと対応できない従来の8.6動線より気づきやすく
+      // する、という本フィーチャーの趣旨）。
+      expect(
+        screen.queryByTestId("register-table-detail-panel"),
+      ).not.toBeInTheDocument();
+
+      fireEvent.click(
+        within(banner).getByRole("button", { name: "対応済みにする" }),
+      );
+
+      await waitFor(() =>
+        expect(mockResolveCallRequest).toHaveBeenCalledWith({
+          callRequestId: "call-T1",
+        }),
+      );
+      await waitFor(() =>
+        expect(
+          screen.queryByTestId("register-call-banner-T1"),
+        ).not.toBeInTheDocument(),
+      );
+      expect(
+        screen.queryByTestId("register-call-banner-stack"),
       ).not.toBeInTheDocument();
     });
   });

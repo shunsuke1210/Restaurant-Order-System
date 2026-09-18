@@ -635,6 +635,9 @@ describe("staffOperationsGateway（結合テスト、実RPCへの疎通確認）
       // 既にresolved済みのためnullになる（listRegisterFeed.integration.test.ts
       // が全ライフサイクル、非nullのケースも含めて検証する）。
       openCallRequestId: null,
+      // 0017（0017_list_register_feed_open_call_request_created_at.sql）:
+      // 上記と同じ理由でnullになる。
+      openCallRequestCreatedAt: null,
     });
 
     // タスク8.3（0012_list_register_feed_item_id.sql）: 品目操作卓
@@ -661,6 +664,7 @@ describe("staffOperationsGateway（結合テスト、実RPCへの疎通確認）
         expect(table.total).toBe(0);
         expect(table.hasOpenCallRequest).toBe(false);
         expect(table.openCallRequestId).toBeNull();
+        expect(table.openCallRequestCreatedAt).toBeNull();
       }
     }
   });

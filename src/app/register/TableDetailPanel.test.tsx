@@ -33,6 +33,8 @@ function makeTable(
     hasOpenCallRequest: false,
     // タスク8.6で追加（0015_list_register_feed_open_call_request_id.sql）。
     openCallRequestId: null,
+    // 0017で追加（0017_list_register_feed_open_call_request_created_at.sql）。
+    openCallRequestCreatedAt: null,
     ...overrides,
   };
 }

@@ -109,6 +109,8 @@ interface TableBillingSummary {
   total: number;
   hasOpenCallRequest: boolean;
   openCallRequestId: string | null;
+  // 0017_list_register_feed_open_call_request_created_at.sqlで追加。
+  openCallRequestCreatedAt: string | null;
 }
 
 async function callListRegisterFeed(
@@ -274,6 +276,7 @@ describe("0004_rpc_staff_gateway.sql: list_register_feed RPC（結合テスト�
       total: 0,
       hasOpenCallRequest: false,
       openCallRequestId: null,
+      openCallRequestCreatedAt: null,
     });
   });
 
@@ -501,6 +504,68 @@ describe("0004_rpc_staff_gateway.sql: list_register_feed RPC（結合テスト�
         (r) => r.tableId === occupiedTableId,
       );
       expect(afterRow?.openCallRequestId).toBeNull();
+    },
+  );
+
+  it(
+    "openCallRequestCreatedAt: 呼び出し前はnull→create_call_request後は実在の" +
+      "call_requests.created_atと完全一致する値を返す→resolve_call_request後は" +
+      "再びnullになる（0017、openCallRequestIdと同じ3段階ライフサイクル。" +
+      "レジ画面の呼び出しバナーが複数卓を「古いものを上に」並べるソートキー" +
+      "として用いるため、DB直接クエリの実際のcreated_atと一致することを検証する）",
+    async () => {
+      const { client, authUserId } = await createDeviceClient(
+        "register",
+        storeId,
+      );
+      createdAuthUserIds.push(authUserId);
+      const anonClient = newAnonClient();
+
+      const before = await callListRegisterFeed(client, storeId);
+      expect(before.error).toBeNull();
+      const beforeRow = (before.data as TableBillingSummary[]).find(
+        (r) => r.tableId === occupiedTableId,
+      );
+      expect(beforeRow?.openCallRequestCreatedAt).toBeNull();
+
+      const createResult = await anonClient.rpc("create_call_request", {
+        p_session_id: occupiedSessionId,
+      });
+      expect(createResult.error).toBeNull();
+      const callRequestId = (createResult.data as { id: string }).id;
+      createdCallRequestIds.push(callRequestId);
+
+      const during = await callListRegisterFeed(client, storeId);
+      expect(during.error).toBeNull();
+      const duringRow = (during.data as TableBillingSummary[]).find(
+        (r) => r.tableId === occupiedTableId,
+      );
+      // jsonb_build_objectがtimestamptzを`+00:00`サフィックス付きで
+      // シリアライズする（pgのDate型が返す`Z`サフィックスのISO文字列とは
+      // 表記が異なる）ため、文字列同士の比較ではなくエポックミリ秒で
+      // 一致を検証する（resolveCallRequest.integration.test.tsが
+      // createdAtの正確な値を`expect.any(String)`のみで検証し、厳密な
+      // 値比較を避けているのと同じ理由）。
+      const dbRow = await pool.query(
+        "select created_at from call_requests where id = $1",
+        [callRequestId],
+      );
+      expect(duringRow?.openCallRequestCreatedAt).toEqual(expect.any(String));
+      expect(
+        new Date(duringRow?.openCallRequestCreatedAt as string).getTime(),
+      ).toBe((dbRow.rows[0]?.created_at as Date).getTime());
+
+      const resolveResult = await client.rpc("resolve_call_request", {
+        p_call_request_id: callRequestId,
+      });
+      expect(resolveResult.error).toBeNull();
+
+      const after = await callListRegisterFeed(client, storeId);
+      expect(after.error).toBeNull();
+      const afterRow = (after.data as TableBillingSummary[]).find(
+        (r) => r.tableId === occupiedTableId,
+      );
+      expect(afterRow?.openCallRequestCreatedAt).toBeNull();
     },
   );
 

@@ -252,6 +252,11 @@ export interface TableBillingSummary {
   // 無ければnullを返す。hasOpenCallRequestは後方互換のため変更せず維持する
   // （8.1のFloorMap.tsxタイルの呼出バッジが引き続き参照する）。
   openCallRequestId: string | null;
+  // spec完了後のユーザー確認で追加（0017_list_register_feed_open_call_request_
+  // created_at.sql）: レジ画面が複数卓の呼び出しバナーを「古いものを上に」
+  // 積み重ねて表示するためのソートキー。openCallRequestIdと同じ対象の
+  // call_requests.created_at（ISO文字列）、無ければnull。
+  openCallRequestCreatedAt: string | null;
 }
 
 // タスク7.4で新規追加（design.mdのStaffOperationsGateway Responsibilities &
@@ -606,6 +611,8 @@ function toRegisterFeed(data: Json): ReadonlyArray<TableBillingSummary> {
     hasOpenCallRequest: boolean;
     // タスク8.6で追加。
     openCallRequestId: string | null;
+    // 0017で追加。
+    openCallRequestCreatedAt: string | null;
   }>;
 
   return raw.map((table) => ({
@@ -631,6 +638,7 @@ function toRegisterFeed(data: Json): ReadonlyArray<TableBillingSummary> {
     total: table.total,
     hasOpenCallRequest: table.hasOpenCallRequest,
     openCallRequestId: table.openCallRequestId,
+    openCallRequestCreatedAt: table.openCallRequestCreatedAt,
   }));
 }
 

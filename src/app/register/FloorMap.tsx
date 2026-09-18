@@ -20,6 +20,7 @@ import { useCloseSession } from "./useCloseSession";
 import { useResolveCallRequest } from "./useResolveCallRequest";
 import { useUpdatePartySize } from "./useUpdatePartySize";
 import TableDetailPanel from "./TableDetailPanel";
+import CallBannerStack from "./CallBannerStack";
 
 /**
  * 卓マップ（design.md「RegisterConsole」の卓マップ表示部分）。
@@ -1003,8 +1004,39 @@ export default function FloorMap({ storeId }: FloorMapProps) {
   const selectedTable =
     state.tables.find((table) => table.tableId === selectedTableId) ?? null;
 
+  // spec完了後のユーザー確認で追加: CallBannerStack向けに、呼び出し中の
+  // 卓を`openCallRequestCreatedAt`昇順（古い順）へ整列する。null
+  // （呼び出しが無い、または0017適用前の防御的な欠損値）の卓は除外する
+  // ——CallBannerStack.tsx冒頭コメント「複数呼び出しの積み重ね順」参照。
+  // ソート自体をこちら側（データを持つ側）で行い、CallBannerStackは
+  // 受け取った順序をそのまま描画するだけの表示専用に保つ。
+  const openCalls = state.tables
+    .filter(
+      (table): table is typeof table & { openCallRequestId: string; openCallRequestCreatedAt: string } =>
+        table.hasOpenCallRequest &&
+        table.openCallRequestId !== null &&
+        table.openCallRequestCreatedAt !== null,
+    )
+    .map((table) => ({
+      tableId: table.tableId,
+      tableLabel: table.tableLabel,
+      callRequestId: table.openCallRequestId,
+      createdAt: table.openCallRequestCreatedAt,
+    }))
+    .sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    );
+
   return (
-    <div data-testid="register-floor-map" className="flex flex-col gap-3 p-3">
+    <>
+      <CallBannerStack
+        calls={openCalls}
+        onDismiss={(tableId, callRequestId) =>
+          void resolveCall(tableId, callRequestId)
+        }
+        dismissingTableId={resolvingTableId}
+      />
+      <div data-testid="register-floor-map" className="flex flex-col gap-3 p-3">
       <div className="flex items-baseline justify-between">
         <h1 className="text-base font-semibold text-neutral-900">卓マップ</h1>
         <span
@@ -1197,6 +1229,7 @@ export default function FloorMap({ storeId }: FloorMapProps) {
           }
         />
       ) : null}
-    </div>
+      </div>
+    </>
   );
 }

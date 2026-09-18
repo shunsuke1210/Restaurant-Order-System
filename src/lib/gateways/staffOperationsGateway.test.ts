@@ -767,7 +767,7 @@ describe("createStaffOperationsGateway", () => {
   });
 
   describe("listRegisterFeed", () => {
-    it("list_register_feedをp_store_idで呼び出し、成功応答を配列へ整形する（activeSessionがnullの卓を含む、各明細のid/optionsSummary/status/genre、卓のopenCallRequestIdを含む。タスク8.3/8.4/8.6）", async () => {
+    it("list_register_feedをp_store_idで呼び出し、成功応答を配列へ整形する（activeSessionがnullの卓を含む、各明細のid/optionsSummary/status/genre、卓のopenCallRequestId/openCallRequestCreatedAtを含む。タスク8.3/8.4/8.6/0017）", async () => {
       rpc.mockResolvedValueOnce({
         data: [
           {
@@ -793,6 +793,7 @@ describe("createStaffOperationsGateway", () => {
             total: 1000,
             hasOpenCallRequest: true,
             openCallRequestId: "call-1",
+            openCallRequestCreatedAt: "2026-01-01T00:05:00.000Z",
           },
           {
             tableId: "table-2",
@@ -802,6 +803,7 @@ describe("createStaffOperationsGateway", () => {
             total: 0,
             hasOpenCallRequest: false,
             openCallRequestId: null,
+            openCallRequestCreatedAt: null,
           },
         ],
         error: null,
@@ -838,9 +840,11 @@ describe("createStaffOperationsGateway", () => {
         total: 1000,
         hasOpenCallRequest: true,
         openCallRequestId: "call-1",
+        openCallRequestCreatedAt: "2026-01-01T00:05:00.000Z",
       });
       expect(result.value[1].activeSession).toBeNull();
       expect(result.value[1].openCallRequestId).toBeNull();
+      expect(result.value[1].openCallRequestCreatedAt).toBeNull();
     });
 
     it("design.mdの`never`エラー型: FORBIDDEN（P0403）でさえResultのエラーにならず例外として伝播する", async () => {
