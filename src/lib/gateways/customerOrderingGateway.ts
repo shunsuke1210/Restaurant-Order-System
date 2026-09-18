@@ -118,6 +118,12 @@ export interface MenuItemView {
   imageUrl: string | null;
   genre: MenuItemGenre;
   options: ReadonlyArray<MenuItemOption>;
+  // 0016で追加。「おすすめ」タブ（ジャンル横断フィルタ）・ジャンル内サブタブ
+  // 表示に使う（GenreTabs.tsx/SubTabs.tsx参照）。subCategoryはnull許容の
+  // 自由記述で、DB側に値域の制約はない（0016マイグレーション冒頭コメント
+  // 参照）。
+  recommended: boolean;
+  subCategory: string | null;
 }
 
 /**
@@ -299,6 +305,8 @@ function toOrderingContext(data: Json): OrderingContext {
       imageUrl: string | null;
       genre: MenuItemGenre;
       options: ReadonlyArray<MenuItemOption>;
+      recommended: boolean;
+      subCategory: string | null;
     }>;
   };
 
@@ -315,6 +323,8 @@ function toOrderingContext(data: Json): OrderingContext {
       imageUrl: item.imageUrl,
       genre: item.genre,
       options: item.options,
+      recommended: item.recommended,
+      subCategory: item.subCategory,
     })),
   };
 }

@@ -15,7 +15,19 @@ export type ItemSelection = {
 };
 
 type OptionSelectionPanelProps = {
-  item: MenuItemView;
+  // MenuItemView全体ではなく、実際に描画で使う3フィールドのみへ絞った
+  // 構造的部分型。task 8.3がこのコンポーネントをレジの品目追加フロー
+  // （MenuItemListing、design.md「StaffOperationsGateway」参照）から
+  // そのまま再利用できたのは、当時MenuItemView/MenuItemListingが構造的に
+  // 一致していたため。しかしMenuItemViewは客側専用の新フィールド
+  // （0016のrecommended/subCategory等）が今後も増えうる一方、それらは
+  // このコンポーネント自体が使わない値であり、増えるたびにMenuItemListing
+  // 側へも同じフィールドを追加し続けるのは不要な結合を生む。そのため
+  // MenuItemView全体を要求せず、実際に必要な部分型（Pick）のみを
+  // 受け取る形にする——MenuItemView・MenuItemListingのどちらも、この
+  // 部分型が要求する3フィールドを持つ限り、互いの他のフィールドの
+  // 増減に関係なくこのコンポーネントをそのまま再利用できる。
+  item: Pick<MenuItemView, "name" | "price" | "options">;
   onCancel: () => void;
   onConfirm: (selection: ItemSelection) => void;
 };

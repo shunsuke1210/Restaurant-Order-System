@@ -8,6 +8,7 @@ import {
   type OrderingContext,
 } from "@/lib/gateways/customerOrderingGateway";
 import GenreTabs, { type GenreFilter } from "./GenreTabs";
+import SubTabs, { type SubTabFilter } from "./SubTabs";
 import MenuItemCard from "./MenuItemCard";
 import OptionSelectionPanel, {
   type ItemSelection,
@@ -194,6 +195,11 @@ export default function MenuScreen({ tableId }: MenuScreenProps) {
 
   const [view, setView] = useState<ViewState>({ status: "loading" });
   const [genreFilter, setGenreFilter] = useState<GenreFilter>("all");
+  // ジャンル内サブタブの選択状態（0016で追加）。ジャンルタブ自体を
+  // 切り替えたときは、以前のジャンルのサブカテゴリ選択を持ち越さないよう
+  // 下のhandleGenreChangeでnullへリセットする。
+  const [subCategoryFilter, setSubCategoryFilter] =
+    useState<SubTabFilter>(null);
   const [selectedItem, setSelectedItem] = useState<MenuItemView | null>(null);
   const [cart, setCart] = useState<CartLine[]>([]);
   const [cartPanelOpen, setCartPanelOpen] = useState(false);
@@ -764,49 +770,87 @@ export default function MenuScreen({ tableId }: MenuScreenProps) {
     return <NoActiveSessionScreen table={view.table} />;
   }
 
-  const visibleMenu = view.menu.filter(
-    (item) => genreFilter === "all" || item.genre === genreFilter,
-  );
+  // ジャンルタブでの絞り込み（サブタブの選択肢導出にも使う、subCategoryでの
+  // 絞り込みより前の段階）。「おすすめ」（0016で追加）はジャンルを問わず
+  // recommended: trueの品目を横断表示する（mock-preview.htmlのosusume分岐
+  // `state.menu.filter(m => m.recommend)`と同じ意味）。
+  const itemsInSelectedGenre =
+    genreFilter === "all" || genreFilter === "recommended"
+      ? view.menu
+      : view.menu.filter((item) => item.genre === genreFilter);
+
+  const visibleMenu =
+    genreFilter === "recommended"
+      ? view.menu.filter((item) => item.recommended)
+      : itemsInSelectedGenre.filter(
+          (item) =>
+            subCategoryFilter === null ||
+            item.subCategory === subCategoryFilter,
+        );
+
+  // ジャンルタブを切り替えたら、前のジャンルのサブカテゴリ選択を持ち越さない
+  // （例: 「一品」で「おつまみ」を選んだ状態から「ドリンク」へ切り替えた際、
+  // ドリンクには存在しない「おつまみ」フィルタが暗黙に残り続けるのを防ぐ）。
+  function handleGenreChange(next: GenreFilter) {
+    setGenreFilter(next);
+    setSubCategoryFilter(null);
+  }
 
   return (
     <main className="min-h-screen bg-white pb-20">
-      <header className="border-b border-neutral-100 px-4 py-3">
-        <div className="flex items-start justify-between gap-2">
-          <h1 className="text-lg font-semibold">注文メニュー</h1>
-          <CallButton
-            open={view.hasOpenCallRequest}
-            state={callState}
-            onCall={() => void handleCallStaff()}
-          />
-        </div>
-        <div className="mt-1 flex items-center gap-2">
-          <span
-            data-testid="table-label"
-            className="rounded bg-neutral-100 px-2 py-0.5 text-sm text-neutral-600"
-          >
-            {view.table.label}
-          </span>
-          {cart.length > 0 ? (
-            <button
-              type="button"
-              data-testid="cart-count"
-              onClick={handleOpenCartPanel}
-              className="rounded-full bg-neutral-900 px-2 py-0.5 text-xs text-white"
-            >
-              選択中の品目: {cart.length}件
-            </button>
-          ) : (
-            <span
-              data-testid="cart-count"
-              className="text-xs text-neutral-400"
-            >
-              選択中の品目: {cart.length}件
-            </span>
-          )}
-        </div>
-      </header>
+      <div className="sticky top-0 z-10 bg-white">
+        <header className="border-b border-neutral-100 px-4 py-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <h1 className="text-lg font-semibold">注文メニュー</h1>
+              <span
+                data-testid="table-label"
+                className="rounded bg-neutral-100 px-2 py-0.5 text-sm text-neutral-600"
+              >
+                {view.table.label}
+              </span>
+            </div>
+            {/* 右上に「スタッフ呼出しボタン→選択中の品目：〇件→注文確認
+                ボタン」の順で並べる（ユーザーからの指摘に基づく並び順）。
+                以前は「選択中の品目」自体がクリック可能なボタンだった
+                （カートが空の間はそもそもクリックできず、カート内容の
+                レビュー導線が分かりづらかった）。今は常時表示・常時活性の
+                「注文確認」ボタンを別に設け、テキストとボタンの役割を
+                分離した。 */}
+            <div className="flex shrink-0 items-center gap-2">
+              <CallButton
+                open={view.hasOpenCallRequest}
+                state={callState}
+                onCall={() => void handleCallStaff()}
+              />
+              <span
+                data-testid="cart-count"
+                className="text-xs text-neutral-500"
+              >
+                選択中の品目: {cart.length}件
+              </span>
+              <button
+                type="button"
+                data-testid="order-confirm-button"
+                onClick={handleOpenCartPanel}
+                disabled={cart.length === 0}
+                className="rounded-full bg-neutral-900 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+              >
+                注文確認
+              </button>
+            </div>
+          </div>
+        </header>
 
-      <GenreTabs value={genreFilter} onChange={setGenreFilter} />
+        <GenreTabs value={genreFilter} onChange={handleGenreChange} />
+        {genreFilter !== "all" && genreFilter !== "recommended" ? (
+          <SubTabs
+            items={itemsInSelectedGenre}
+            value={subCategoryFilter}
+            onChange={setSubCategoryFilter}
+          />
+        ) : null}
+      </div>
 
       <div>
         {visibleMenu.length === 0 ? (

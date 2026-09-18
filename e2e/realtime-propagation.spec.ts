@@ -208,7 +208,11 @@ test.describe("客→厨房/レジのRealtime伝播（タスク9.2）", () => {
       await customerPage
         .getByRole("button", { name: "選択を確定" })
         .click();
-      await customerPage.getByTestId("cart-count").click();
+      // spec完了後のユーザー確認で追加: 注文確認画面のヘッダー再編に伴い、
+      // cart-countは非対話的なテキストへ変更された。カートを開く操作は
+      // 新設のorder-confirm-buttonをクリックする（main-user-journey.spec.ts
+      // と同じ修正）。
+      await customerPage.getByTestId("order-confirm-button").click();
       await customerPage
         .getByRole("dialog", { name: "注文カート" })
         .waitFor();

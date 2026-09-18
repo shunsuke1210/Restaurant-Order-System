@@ -119,11 +119,11 @@ describe("0003_rpc_customer_gateway.sql: get_ordering_context RPC（結合テス
     );
 
     await pool.query(
-      `insert into menu_items (id, store_id, name, price, sold_out, genre, image_url, options)
+      `insert into menu_items (id, store_id, name, price, sold_out, genre, image_url, options, recommended, sub_category)
        values
-         ($1, $2, 'Item One', 500, false, 'food', 'https://example.com/item-one.jpg', $3::jsonb),
-         ($4, $2, 'Item Two', 300, false, 'drink', null, '[]'::jsonb),
-         ($5, $2, 'Item Three SoldOut', 800, true, 'ippin', null, '[]'::jsonb)`,
+         ($1, $2, 'Item One', 500, false, 'food', 'https://example.com/item-one.jpg', $3::jsonb, true, '刺身'),
+         ($4, $2, 'Item Two', 300, false, 'drink', null, '[]'::jsonb, false, null),
+         ($5, $2, 'Item Three SoldOut', 800, true, 'ippin', null, '[]'::jsonb, false, 'おつまみ')`,
       [
         menuItemId,
         storeId,
@@ -274,6 +274,40 @@ describe("0003_rpc_customer_gateway.sql: get_ordering_context RPC（結合テス
     expect(withoutImageOrOptions).toMatchObject({
       imageUrl: null,
       options: [],
+    });
+  });
+
+  it("recommended・subCategoryが設定/未設定の品目それぞれで元の値がそのまま往復する（0016で追加）", async () => {
+    const supabase = newAnonClient();
+    const { data, error } = await supabase.rpc("get_ordering_context", {
+      p_table_id: tableNoSessionId,
+    });
+
+    expect(error).toBeNull();
+    const menu = data.menu as Array<Record<string, unknown>>;
+
+    const recommendedWithSubCategory = menu.find(
+      (item) => item.id === menuItemId,
+    );
+    expect(recommendedWithSubCategory).toMatchObject({
+      recommended: true,
+      subCategory: "刺身",
+    });
+
+    const notRecommendedNoSubCategory = menu.find(
+      (item) => item.id === menuItemNoOptionsId,
+    );
+    expect(notRecommendedNoSubCategory).toMatchObject({
+      recommended: false,
+      subCategory: null,
+    });
+
+    const soldOutWithSubCategory = menu.find(
+      (item) => item.id === soldOutMenuItemId,
+    );
+    expect(soldOutWithSubCategory).toMatchObject({
+      recommended: false,
+      subCategory: "おつまみ",
     });
   });
 

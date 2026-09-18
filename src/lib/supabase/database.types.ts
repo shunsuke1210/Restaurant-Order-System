@@ -103,8 +103,10 @@ export type Database = {
           name: string
           options: Json
           price: number
+          recommended: boolean
           sold_out: boolean
           store_id: string
+          sub_category: string | null
         }
         Insert: {
           genre: string
@@ -113,8 +115,10 @@ export type Database = {
           name: string
           options?: Json
           price: number
+          recommended?: boolean
           sold_out?: boolean
           store_id: string
+          sub_category?: string | null
         }
         Update: {
           genre?: string
@@ -123,8 +127,10 @@ export type Database = {
           name?: string
           options?: Json
           price?: number
+          recommended?: boolean
           sold_out?: boolean
           store_id?: string
+          sub_category?: string | null
         }
         Relationships: [
           {

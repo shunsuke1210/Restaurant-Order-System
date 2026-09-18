@@ -425,7 +425,13 @@ test.describe("主要ユーザージャーニー（タスク10.4）", () => {
 
       // カート内容の確認・送信（要件1.7）。3明細（food×2, drink×1）の
       // 合計を検証する。
-      await customerPage.getByTestId("cart-count").click();
+      // spec完了後のユーザー確認で追加: 注文確認画面のヘッダーがスタッフ
+      // 呼出しボタン・選択中の品目数（テキスト）・注文確認ボタンの順に
+      // 並ぶよう再編された。cart-countは非対話的なテキストへ変更された
+      // ため、カートを開く操作は新設のorder-confirm-buttonをクリックする
+      // （MenuScreen.test.tsxのopenCartPanel/openCartPanelSyncヘルパーと
+      // 同じ修正）。
+      await customerPage.getByTestId("order-confirm-button").click();
       const cartDialog = customerPage.getByRole("dialog", {
         name: "注文カート",
       });

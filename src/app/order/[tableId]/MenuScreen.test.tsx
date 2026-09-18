@@ -49,6 +49,8 @@ const baseMenu: MenuItemView[] = [
     imageUrl: "https://example.com/karaage.jpg",
     genre: "food",
     options: [],
+    recommended: false,
+    subCategory: null,
   },
   {
     id: "item-drink-1",
@@ -58,6 +60,8 @@ const baseMenu: MenuItemView[] = [
     imageUrl: null,
     genre: "drink",
     options: [],
+    recommended: false,
+    subCategory: null,
   },
   {
     id: "item-soldout-1",
@@ -67,6 +71,8 @@ const baseMenu: MenuItemView[] = [
     imageUrl: null,
     genre: "food",
     options: [],
+    recommended: false,
+    subCategory: null,
   },
   {
     id: "item-options-1",
@@ -75,6 +81,8 @@ const baseMenu: MenuItemView[] = [
     soldOut: false,
     imageUrl: null,
     genre: "ippin",
+    recommended: false,
+    subCategory: null,
     options: [
       {
         id: "sauce",
@@ -93,6 +101,40 @@ const baseMenu: MenuItemView[] = [
         default: 0,
       },
     ],
+  },
+  // 0016（おすすめタブ・ジャンル内サブタブ）用の追加フィクスチャ。
+  {
+    id: "item-recommended-1",
+    name: "本日のおすすめ丼",
+    price: 900,
+    soldOut: false,
+    imageUrl: null,
+    genre: "food",
+    options: [],
+    recommended: true,
+    subCategory: "ご飯もの",
+  },
+  {
+    id: "item-yakimono-1",
+    name: "焼き鳥",
+    price: 380,
+    soldOut: false,
+    imageUrl: null,
+    genre: "food",
+    options: [],
+    recommended: false,
+    subCategory: "焼き物",
+  },
+  {
+    id: "item-yakimono-2",
+    name: "豚バラ串",
+    price: 350,
+    soldOut: false,
+    imageUrl: null,
+    genre: "food",
+    options: [],
+    recommended: false,
+    subCategory: "焼き物",
   },
 ];
 
@@ -181,6 +223,84 @@ describe("MenuScreen", () => {
     expect(screen.getByText("唐揚げ")).toBeInTheDocument();
     expect(screen.getByText("レモンサワー")).toBeInTheDocument();
     expect(screen.getByText("オプション品目")).toBeInTheDocument();
+  });
+
+  it("「おすすめ」タブはジャンルを問わずrecommended: trueの品目のみを横断表示する（0016で追加）", async () => {
+    mockGetOrderingContext.mockResolvedValue(okContext());
+
+    render(<MenuScreen tableId="table-1" />);
+    await screen.findByText("唐揚げ");
+
+    fireEvent.click(screen.getByRole("tab", { name: "おすすめ" }));
+
+    expect(screen.getByText("本日のおすすめ丼")).toBeInTheDocument();
+    expect(screen.queryByText("唐揚げ")).not.toBeInTheDocument();
+    expect(screen.queryByText("焼き鳥")).not.toBeInTheDocument();
+    // 「おすすめ」タブではサブタブ自体を表示しない
+    // （ジャンル横断のため「一品/フード/ドリンク」いずれのサブカテゴリ
+    // 一覧にも一意に対応しないため。SubTabs.tsx冒頭コメント参照）。
+    expect(screen.queryByRole("tab", { name: "焼き物" })).not.toBeInTheDocument();
+  });
+
+  it("ジャンル内にサブカテゴリを持つ品目があればサブタブが表示され、選択すると絞り込まれる（0016で追加）", async () => {
+    mockGetOrderingContext.mockResolvedValue(okContext());
+
+    render(<MenuScreen tableId="table-1" />);
+    await screen.findByText("唐揚げ");
+
+    fireEvent.click(screen.getByRole("tab", { name: "フード" }));
+    // フードジャンルには「ご飯もの」（おすすめ丼）・「焼き物」
+    // （焼き鳥・豚バラ串）というsubCategoryを持つ品目と、
+    // subCategoryを持たない品目（唐揚げ・刺身盛り合わせ）が混在する。
+    // サブタブ未選択時はサブカテゴリの有無に関わらず全品目を表示する。
+    expect(screen.getByText("唐揚げ")).toBeInTheDocument();
+    expect(screen.getByText("焼き鳥")).toBeInTheDocument();
+    expect(screen.getByText("本日のおすすめ丼")).toBeInTheDocument();
+
+    const yakimonoSubTab = screen.getByRole("tab", { name: "焼き物" });
+    expect(yakimonoSubTab).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", { name: "ご飯もの" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(yakimonoSubTab);
+    // 「焼き物」を選ぶと、同じsubCategoryを持つ品目（複数）のみに絞り込まれ、
+    // subCategoryを持たない品目や他のsubCategoryの品目は消える。
+    expect(screen.getByText("焼き鳥")).toBeInTheDocument();
+    expect(screen.getByText("豚バラ串")).toBeInTheDocument();
+    expect(screen.queryByText("唐揚げ")).not.toBeInTheDocument();
+    expect(screen.queryByText("本日のおすすめ丼")).not.toBeInTheDocument();
+
+    // 選択中のサブタブを再度タップすると絞り込みが解除される。
+    fireEvent.click(yakimonoSubTab);
+    expect(screen.getByText("唐揚げ")).toBeInTheDocument();
+    expect(screen.getByText("焼き鳥")).toBeInTheDocument();
+  });
+
+  it("ジャンルタブを切り替えるとサブタブの選択状態がリセットされる（0016で追加）", async () => {
+    mockGetOrderingContext.mockResolvedValue(okContext());
+
+    render(<MenuScreen tableId="table-1" />);
+    await screen.findByText("唐揚げ");
+
+    fireEvent.click(screen.getByRole("tab", { name: "フード" }));
+    fireEvent.click(screen.getByRole("tab", { name: "焼き物" }));
+    expect(screen.queryByText("唐揚げ")).not.toBeInTheDocument();
+
+    // ドリンクへ切り替えると、フードの「焼き物」選択は持ち越されない
+    // （持ち越されるとドリンクにも存在しないサブカテゴリが暗黙に効いた
+    // ままになり、原因不明の絞り込みに見えてしまう）。
+    fireEvent.click(screen.getByRole("tab", { name: "ドリンク" }));
+    expect(screen.getByText("レモンサワー")).toBeInTheDocument();
+    // ドリンクにはsubCategoryを持つ品目が無いため、サブタブ行自体が
+    // 描画されない。
+    expect(screen.queryByRole("tab", { name: "焼き物" })).not.toBeInTheDocument();
+
+    // フードへ戻ると、サブタブの選択は解除された状態（全品目表示）に
+    // 戻っている。
+    fireEvent.click(screen.getByRole("tab", { name: "フード" }));
+    expect(screen.getByText("唐揚げ")).toBeInTheDocument();
+    expect(screen.getByText("焼き鳥")).toBeInTheDocument();
   });
 
   it("品目タップでオプション選択パネルが開き、choice/toggle/counterの各操作が状態に反映される", async () => {
@@ -312,7 +432,7 @@ async function addKaraageToCart() {
 
 /** カートを開いて注文カートダイアログを表示する共通手順。 */
 async function openCartPanel() {
-  fireEvent.click(screen.getByTestId("cart-count"));
+  fireEvent.click(screen.getByTestId("order-confirm-button"));
   return screen.findByRole("dialog", { name: "注文カート" });
 }
 
@@ -1066,7 +1186,7 @@ function addKaraageToCartSync() {
 
 /** openCartPanelのfakeTimers対応版（findBy*ではなく同期的なgetBy*を使う）。 */
 function openCartPanelSync() {
-  fireEvent.click(screen.getByTestId("cart-count"));
+  fireEvent.click(screen.getByTestId("order-confirm-button"));
   return screen.getByRole("dialog", { name: "注文カート" });
 }
 
