@@ -26,11 +26,14 @@ export default function ConfirmedTotalBar({ amount }: ConfirmedTotalBarProps) {
       className="fixed inset-x-0 bottom-0 z-0 flex items-center justify-between border-t border-neutral-200 bg-white px-4 py-3 shadow-[0_-2px_8px_rgba(0,0,0,0.06)]"
     >
       <span className="text-sm text-neutral-500">ご注文合計</span>
-      <span
-        data-testid="confirmed-total-amount"
-        className="font-mono text-base font-semibold text-neutral-900"
-      >
-        {formatYen(amount)}
+      <span className="flex items-baseline gap-1">
+        <span className="text-xs text-neutral-400">（税込み）</span>
+        <span
+          data-testid="confirmed-total-amount"
+          className="font-mono text-base font-semibold text-neutral-900"
+        >
+          {formatYen(amount)}
+        </span>
       </span>
     </div>
   );

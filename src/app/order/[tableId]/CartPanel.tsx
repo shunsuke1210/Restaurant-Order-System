@@ -144,8 +144,13 @@ export default function CartPanel({
 
             <div className="mb-4 flex items-center justify-between border-t border-neutral-100 pt-3 text-sm font-medium text-neutral-900">
               <span>小計</span>
-              <span data-testid="cart-subtotal">
-                {formatYen(cartSubtotal(cart))}
+              <span className="flex items-baseline gap-1">
+                <span className="text-xs font-normal text-neutral-400">
+                  （税込み）
+                </span>
+                <span data-testid="cart-subtotal">
+                  {formatYen(cartSubtotal(cart))}
+                </span>
               </span>
             </div>
 
